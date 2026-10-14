@@ -215,6 +215,14 @@ the nearest section headings and documents in the evidence. "Front matter" and c
   and record keeping” in the Mortgage Loan Policy, and nothing there says it." Heading: "Not confirmed by
   your documents".
 
+- Users (v71-v72): a User reads only the policies assigned to them (`auth/acl.py`).
+  - `NOT_ASSIGNED` ("ask your Branch Manager to assign it") replaces a not-found reason only when words of the
+    question that the User's own policies lack all occur in an active, unassigned policy their scope reaches
+    (`RAGService._assigned_elsewhere`, word counts only). The policy is never named or quoted.
+  - Otherwise the ordinary not-found message stands, so a general question is not called "not assigned".
+  - A User with nothing assigned gets `NO_ASSIGNED_POLICIES` before any search or model call, unless the message
+    is a greeting or has no subject (those keep their conversational replies).
+
 Suggestions are questions about those sections ("What does the Home Loan Guide say in “Who Can Apply”?").
 When nothing came close, the generic tips in `SUGGESTIONS` are used.
 

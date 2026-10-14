@@ -84,3 +84,26 @@ def test_assignment_takes_effect_and_invalidates_cached_answers(client, db, worl
     assert answered["status"] == "answered" and answered["cache_hit"] is False
     assert manager.delete(f"/policies/{policy_id}/assignments/{colleague.id}").status_code == 200
     assert ask(client, colleague, question)["status"] == "no_answer"
+
+
+def test_a_user_with_nothing_assigned_is_told_so_without_a_search(client, db, world):
+    bank_a, _, _ = world
+    from app.modules.auth.permissions import Role
+    from app.tests.factories import make_user
+
+    newcomer = make_user(db, Role.DEPARTMENT_USER, org=bank_a.org, branch=bank_a.branch_a, department=bank_a.dept_a2)
+    db.commit()
+    answer = ask(client, newcomer, "What is the overnight dealer limit per desk?")
+    assert answer["no_answer"]["reason"] == "NO_ASSIGNED_POLICIES"
+    assert "Branch Manager" in answer["no_answer"]["message"] and "50 crore" not in str(answer)
+    # A greeting is still answered as one.
+    assert ask(client, newcomer, "Hello")["no_answer"]["reason"] == "GREETING"
+
+
+def test_a_general_question_is_not_called_unassigned(client, world):
+    bank_a, _, _ = world
+    # Nothing in user_a2's scope mentions gold or carats: the ordinary reply, not "ask to be assigned".
+    answer = ask(client, bank_a.user_a2, "What is the gold loan LTV for jewellery above 18 carat?")
+    assert answer["status"] == "no_answer"
+    assert answer["no_answer"]["reason"] != "NOT_ASSIGNED"
+    assert "assign" not in answer["no_answer"]["message"].lower()

@@ -400,6 +400,9 @@ const NOT_FOUND_HEADINGS: Record<string, string> = {
   ANSWER_FAILED_VALIDATION: "Your documents don’t answer this directly",
   ANSWER_OFF_TOPIC: "Your documents don’t answer this directly",
   CLAIM_NOT_CONFIRMED: "Not confirmed by your documents",
+  // A User: nothing is assigned to them yet, or only a policy not assigned to them covers the question.
+  NO_ASSIGNED_POLICIES: "No policies assigned to you yet",
+  NOT_ASSIGNED: "Not in the policies assigned to you",
 };
 
 function NoAnswer({ reason, onRetry }: { reason: Answer["no_answer"]; onRetry: () => void }) {

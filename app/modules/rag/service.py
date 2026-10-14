@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
@@ -95,11 +95,24 @@ SUGGESTIONS = [
     "Asking about one rule at a time, in the words your policy uses",
 ]
 NO_ANSWER_MESSAGE = "None of the documents you can access answer this, so I won't guess."
+# A User reads only the policies assigned to them (auth/acl.py). When their own policies lack the question's
+# words but a policy their branch scope reaches (not assigned to them) has them, they are told to ask for it,
+# so it is not mistaken for something the bank has no policy on. The policy is never named.
+NOT_ASSIGNED_MESSAGE = (
+    "The policies assigned to you don't cover this, but a policy you aren't assigned seems to. If you need it, "
+    "ask your Branch Manager to assign it to you."
+)
+NO_ASSIGNED_POLICIES_MESSAGE = (
+    "No policies are assigned to you yet, so there is nothing I can answer from. Ask your Branch Manager to "
+    "assign the policies you need; you can ask about them as soon as they do."
+)
 # No-answers because the documents (as far as they were read) do not answer: explained with what was read.
 NOT_FOUND_REASONS = frozenset({
     "NO_RELEVANT_DOCUMENTS", "LOW_RELEVANCE", "KEY_TERMS_NOT_FOUND", "INSUFFICIENT_EVIDENCE",
     "ANSWER_FAILED_VALIDATION", "ANSWER_OFF_TOPIC",
 })
+# No-answers about what the reader's documents say or lack: for a User, the policies assigned to them.
+ASSIGNED_SCOPE_REASONS = NOT_FOUND_REASONS | {"CLAIM_NOT_CONFIRMED"}
 # No-answers that say nothing about the question, only about this attempt: never cached.
 TRANSIENT_REASONS = frozenset({"DEADLINE_EXCEEDED", "LLM_UNAVAILABLE", "NEEDS_CONTEXT"})
 # No-answers decided by checking what the model wrote against the documents.
@@ -187,7 +200,10 @@ HISTORY_KEY_CHARS = 300
 #          its stated result checked; a wrong one is reported to the retry and its claims are not reused
 #   v70    the model's arithmetic is never needed: a valid calculation whose result no claim states correctly is
 #          stated in the question's words with its working (calculate.restated_result)
-ANSWER_CACHE_VERSION = "v70"
+#   v71    a User with no policies assigned is told so before any search (NO_ASSIGNED_POLICIES)
+#   v72    a User's no-answer says "ask for it" (NOT_ASSIGNED) only when an unassigned policy in their scope has the
+#          words their own policies lack; general questions get the ordinary replies
+ANSWER_CACHE_VERSION = "v72"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -548,6 +564,19 @@ class RAGService:
         confirms what was already shown.
         """
         started = time.perf_counter()
+        asked = strip_instructions(request.question)[0]
+        if (principal.reads_by_assignment and not principal.assigned_policy_ids
+                and not is_greeting(asked) and key_terms(asked)):
+            # Nothing is assigned to this User, so a question about something could find nothing (auth/acl.py):
+            # say so at once, with no search and no model call. A greeting still gets its reply.
+            response = AnswerResponse(
+                question=request.question, status="no_answer", answer=None, claims=[], sources=[], conflicts=[],
+                warnings=[], plan={}, evidence_score=0.0, model=None, usage={}, timings_ms={},
+                no_answer=NoAnswer(reason="NO_ASSIGNED_POLICIES", message=NO_ASSIGNED_POLICIES_MESSAGE, suggestions=[]),
+            )
+            response.query_id = self._audit(principal, request, response, retrieved=[], cache_hit=False)
+            yield "done", response
+            return
         key = self._answer_cache_key(principal, request)
         if (cached := self.cache.get(key)) is not None:
             response = AnswerResponse.model_validate(cached)
@@ -632,12 +661,39 @@ class RAGService:
             response.warnings.insert(0, "Your message included instructions to change how I answer (“"
                                      f"{self._ignored_instructions[0][:80]}”). I ignored them and answered only "
                                      "from your documents.")
+        if (principal.reads_by_assignment and response.status == "no_answer" and response.no_answer
+                and response.no_answer.reason in ASSIGNED_SCOPE_REASONS
+                and self._assigned_elsewhere(principal, prepared_request.question)):
+            # Before translation, so the message is in the reader's language. Why their own policies did
+            # not answer stays in the audit trail.
+            response.plan = {**response.plan, "assigned_policies_reason": response.no_answer.reason}
+            response.no_answer = NoAnswer(reason="NOT_ASSIGNED", message=NOT_ASSIGNED_MESSAGE, suggestions=[])
         if language:
             response = self._in_language(response, language, timings)
         response = self._decorate_and_persist(
             principal, request, prepared_request, response, plan, rewrite, retrieved, timings, started, key
         )
         yield "done", response
+
+    def _assigned_elsewhere(self, principal: Principal, question: str) -> bool:
+        """Whether a User's question is about something only a policy not assigned to them covers: words of the
+        question that none of their policies use all occur in an active policy their branch (and department)
+        scope reaches. Word counts only: no passage, title or answer of that policy reaches the User."""
+        terms = sorted(set(key_terms(question)))
+        missing = self.retriever.unseen_terms(principal, terms) if terms else set()
+        if not missing:
+            return False
+        scope = or_(Policy.branch_id.is_(None), and_(
+            Policy.branch_id == principal.branch_id,
+            or_(Policy.department_id.is_(None), Policy.department_id == principal.department_id),
+        ))
+        reach = frozenset(self.session.scalars(select(Policy.id).where(
+            Policy.organization_id == principal.organization_id, Policy.status == PolicyStatus.ACTIVE, scope,
+            Policy.id.not_in(principal.assigned_policy_ids),
+        )))
+        if not reach:
+            return False
+        return not self.retriever.unseen_terms(dataclasses.replace(principal, assigned_policy_ids=reach), sorted(missing))
 
     def _answer_part(self, principal: Principal, request: AskRequest, question: str, deadline: float):
         """One part of a several-question message, answered in a worker thread with its own session,
