@@ -59,17 +59,18 @@ def test_user_complaint_reaches_only_their_branch_manager(client, tenant):
     assert history == ["in_progress", "resolved", "closed"]
 
 
-def test_support_escalates_by_level(client, tenant, master):
-    manager_ticket = raise_ticket(login(client, tenant.manager_a), subject="Need a new category")
-    assert manager_ticket["level"] == "organization"
-    admin = login(client, tenant.admin)
-    assert [t["id"] for t in admin.get("/tickets?box=queue").json()["data"]["items"]] == [manager_ticket["id"]]
-
-    admin_ticket = raise_ticket(admin, subject="Platform is slow")
-    assert admin_ticket["level"] == "platform"
+def test_support_from_anyone_goes_to_platform_support(client, tenant, master):
+    raised = [raise_ticket(login(client, who), subject=f"Help needed {n}", category="Core banking software")
+              for n, who in enumerate((tenant.user_a1, tenant.manager_a, tenant.admin))]
+    assert {t["level"] for t in raised} == {"platform"}
     platform = login(client, master)
-    assert [t["id"] for t in platform.get("/tickets?box=queue").json()["data"]["items"]] == [admin_ticket["id"]]
-    assert platform.get(f"/tickets/{manager_ticket['id']}").status_code == 404
+    queue = platform.get("/tickets?box=queue").json()["data"]["items"]
+    assert {t["id"] for t in queue} == {t["id"] for t in raised}
+    assert {t["organization_name"] for t in queue} == {tenant.org.name}
+    assert {t["created_by_role"] for t in queue} == {"department_user", "branch_manager", "org_admin"}
+    # Nobody in the organisation handles support: not the branch manager, not the admin.
+    assert login(client, tenant.manager_a).get(f"/tickets/{raised[0]['id']}").status_code == 404
+    assert login(client, tenant.admin).get(f"/tickets/{raised[1]['id']}").status_code == 404
 
     assert login(client, tenant.manager_a).post("/tickets", json={
         "kind": "complaint", "subject": "x" * 5, "description": "only users complain",
@@ -79,7 +80,7 @@ def test_support_escalates_by_level(client, tenant, master):
 
 def test_ticket_attachments(client, tenant):
     user = login(client, tenant.user_a1)
-    ticket = raise_ticket(user)
+    ticket = raise_ticket(user, kind="complaint")  # handled by their branch manager
     sent = user.post(f"/tickets/{ticket['id']}/attachments",
                      files={"file": ("receipt.png", io.BytesIO(PNG), "image/png")})
     assert sent.status_code == 201, sent.text

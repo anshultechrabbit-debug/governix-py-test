@@ -24,6 +24,7 @@ from app.modules.audit.service import record_event
 from app.modules.auth.permissions import Principal, Role
 from app.modules.notifications.model import NotificationType
 from app.modules.notifications.service import notify
+from app.modules.organizations.model import Organization
 from app.modules.policies.model import Policy
 from app.modules.policies.repository import PolicyRepository
 from app.modules.tickets.model import (
@@ -43,11 +44,9 @@ ATTACHMENT_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
-LEVEL_FOR_ROLE = {
-    Role.DEPARTMENT_USER: TicketLevel.BRANCH,
-    Role.BRANCH_MANAGER: TicketLevel.ORGANIZATION,
-    Role.ORG_ADMIN: TicketLevel.PLATFORM,
-}
+# Who raises tickets: everyone in an organisation. Complaints go to the User's Branch Manager;
+# support tickets to the platform's technical support (the master admins).
+RAISERS = frozenset({Role.DEPARTMENT_USER, Role.BRANCH_MANAGER, Role.ORG_ADMIN})
 # What a creator may do to their own ticket.
 CREATOR_TRANSITIONS = {
     TicketStatus.RESOLVED: {TicketStatus.CLOSED, TicketStatus.OPEN},  # accept, or reopen
@@ -76,6 +75,9 @@ class TicketView:
     can_handle: bool
     policy_name: str | None = None
     last_reply: LastReply | None = None
+    # Platform support sees every organisation's tickets: whose bank, and who in it.
+    organization_name: str | None = None
+    created_by_role: str | None = None
 
 
 def is_handler(principal: Principal, ticket: Ticket) -> bool:
@@ -122,17 +124,17 @@ class TicketService:
 
     def create(self, principal: Principal, *, kind: TicketKind, subject: str, description: str,
                priority: str, category: str | None, policy_id: uuid.UUID | None = None) -> Ticket:
-        level = LEVEL_FOR_ROLE.get(principal.role)
-        if level is None or principal.organization_id is None:
+        if principal.role not in RAISERS or principal.organization_id is None:
             raise PermissionDeniedError("Your role does not raise tickets.")
         if kind == TicketKind.COMPLAINT and principal.role is not Role.DEPARTMENT_USER:
             raise ValidationError("Complaints are raised by users to their branch manager; raise a support ticket instead.")
+        level = TicketLevel.BRANCH if kind == TicketKind.COMPLAINT else TicketLevel.PLATFORM
         # Only a policy the creator can read (a User: one assigned to them), so a ticket never names another.
         if policy_id is not None and PolicyRepository(self.session).get_visible(principal, policy_id) is None:
             raise ValidationError("Choose one of the policies you can read.", code="POLICY_NOT_FOUND")
         ticket = Ticket(
             organization_id=principal.organization_id,
-            branch_id=principal.branch_id if level != TicketLevel.PLATFORM else None,
+            branch_id=principal.branch_id,  # where it came from; the level decides who handles it
             kind=kind, level=level, category=(category or "").strip() or None,
             subject=subject.strip(), description=description.strip(), priority=priority,
             status=TicketStatus.OPEN, created_by_id=principal.user_id, policy_id=policy_id,
@@ -201,7 +203,13 @@ class TicketService:
         if not tickets:
             return []
         people = {t.created_by_id for t in tickets} | {t.assigned_to_id for t in tickets}
-        names = dict(self.session.execute(select(User.id, User.full_name).where(User.id.in_(people - {None}))).all())
+        users = {uid: (name, role) for uid, name, role in self.session.execute(
+            select(User.id, User.full_name, User.role).where(User.id.in_(people - {None}))
+        ).all()}
+        names = {uid: name for uid, (name, _) in users.items()}
+        organizations = dict(self.session.execute(
+            select(Organization.id, Organization.name).where(Organization.id.in_({t.organization_id for t in tickets}))
+        ).all())
         counts = dict(self.session.execute(
             select(TicketMessage.ticket_id, func.count()).where(TicketMessage.ticket_id.in_([t.id for t in tickets]))
             .group_by(TicketMessage.ticket_id)
@@ -212,7 +220,8 @@ class TicketService:
         replies = self._last_replies(tickets)
         return [
             TicketView(t, names.get(t.created_by_id), names.get(t.assigned_to_id), counts.get(t.id, 0),
-                       is_handler(principal, t), policies.get(t.policy_id), replies.get(t.id))
+                       is_handler(principal, t), policies.get(t.policy_id), replies.get(t.id),
+                       organizations.get(t.organization_id), users.get(t.created_by_id, (None, None))[1])
             for t in tickets
         ]
 

@@ -612,6 +612,7 @@ export type TicketStatus = "open" | "in_progress" | "waiting_for_response" | "re
 export interface Ticket {
   id: UUID;
   organization_id: UUID;
+  organization_name: string | null;
   branch_id: UUID | null;
   kind: "complaint" | "support";
   level: "branch" | "organization" | "platform";
@@ -625,6 +626,7 @@ export interface Ticket {
   status: TicketStatus;
   created_by_id: UUID | null;
   created_by_name: string | null;
+  created_by_role: Me["role"] | null;
   assigned_to_id: UUID | null;
   assigned_to_name: string | null;
   message_count: number;

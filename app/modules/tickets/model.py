@@ -1,11 +1,13 @@
 """Complaints and support tickets, routed by level.
 
-    branch        a User raises it; their branch's managers handle it
-    organization  a Branch Manager raises it; the organisation admins handle it
-    platform      an Organisation Admin raises it; the master admins handle it
+    branch        a complaint: a User raises it; their branch's managers handle it
+    platform      a support ticket: anyone in an organisation raises it (User, Branch
+                  Manager, Organisation Admin); the master admins, the platform's
+                  technical support, handle it
+    organization  support tickets Branch Managers raised before support went to the
+                  platform; their organisation admins still handle them
 
-A complaint is always branch level (User -> Branch Manager). Every reply and
-status change is kept.
+Every reply and status change is kept.
 """
 
 import uuid

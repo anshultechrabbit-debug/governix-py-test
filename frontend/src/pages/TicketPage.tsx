@@ -73,7 +73,8 @@ export function TicketPage() {
           <p className="mt-1 text-sm text-muted">{ticket.kind === "complaint" ? "Complaint" : "Support request"}
             {ticket.policy_id && ticket.policy_name
               ? <> · <Link to={`/policies/${ticket.policy_id}`} className="text-brand-700 hover:underline">{ticket.policy_name}</Link></>
-              : ticket.category ? ` · ${ticket.category}` : ""} · raised {formatDateTime(ticket.created_at)} by {ticket.created_by_name ?? "—"}</p>
+              : ticket.category ? ` · ${ticket.category}` : ""} · raised {formatDateTime(ticket.created_at)} by {ticket.created_by_name ?? "—"}
+            {me?.role === "master_admin" && ticket.organization_name ? ` of ${ticket.organization_name}` : ""}</p>
         </div>
         <div className="flex flex-wrap gap-2"><Badge tone={PRIORITY_TONE[ticket.priority]}>{humanize(ticket.priority)} priority</Badge><Badge tone={tone}>{label}</Badge></div>
       </div>

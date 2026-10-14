@@ -43,6 +43,7 @@ class TicketCreate(BaseModel):
 class TicketRead(BaseModel):
     id: uuid.UUID
     organization_id: uuid.UUID
+    organization_name: str | None
     branch_id: uuid.UUID | None
     kind: str
     level: str
@@ -55,6 +56,7 @@ class TicketRead(BaseModel):
     status: str
     created_by_id: uuid.UUID | None
     created_by_name: str | None
+    created_by_role: str | None
     assigned_to_id: uuid.UUID | None
     assigned_to_name: str | None
     message_count: int
@@ -119,10 +121,12 @@ class AssignTicket(BaseModel):
 def _read(view: TicketView) -> TicketRead:
     t = view.ticket
     return TicketRead(
-        id=t.id, organization_id=t.organization_id, branch_id=t.branch_id, kind=t.kind, level=t.level,
+        id=t.id, organization_id=t.organization_id, organization_name=view.organization_name,
+        branch_id=t.branch_id, kind=t.kind, level=t.level,
         category=t.category, policy_id=t.policy_id, policy_name=view.policy_name, subject=t.subject,
         description=t.description, priority=t.priority, status=t.status,
-        created_by_id=t.created_by_id, created_by_name=view.created_by_name, assigned_to_id=t.assigned_to_id,
+        created_by_id=t.created_by_id, created_by_name=view.created_by_name, created_by_role=view.created_by_role,
+        assigned_to_id=t.assigned_to_id,
         assigned_to_name=view.assigned_to_name, message_count=view.message_count, can_handle=view.can_handle,
         last_reply_body=reply.body if (reply := view.last_reply) else None,
         last_reply_by=reply.author_name if reply else None, last_reply_at=reply.at if reply else None,
@@ -143,7 +147,7 @@ def _detail(service: TicketService, principal: Principal, ticket_id: uuid.UUID) 
 
 @router.post("", response_model=ApiResponse[TicketDetail], status_code=201)
 def create_ticket(body: TicketCreate, principal: Supporter, service: Service):
-    """Raise a complaint (Users) or support ticket; it is routed to the level above the caller."""
+    """Raise a complaint (Users, to their Branch Manager) or a support ticket (anyone, to platform support)."""
     ticket = service.create(principal, kind=body.kind, subject=body.subject, description=body.description,
                             priority=body.priority, category=body.category, policy_id=body.policy_id)
     return ok(_detail(service, principal, ticket.id))
