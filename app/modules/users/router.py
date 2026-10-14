@@ -9,7 +9,10 @@ from app.core.pagination import Page, PageParams, page_params
 from app.core.responses import ApiResponse, ok
 from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
-from app.modules.users.schema import PasswordReset, UserCreate, UserRead, UserUpdate
+from app.modules.users.model import User
+from app.modules.users.schema import (
+    PasswordReset, TemporaryPassword, UserCreate, UserCreated, UserRead, UserStats, UserStatus, UserUpdate,
+)
 from app.modules.users.service import UserService
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -25,9 +28,15 @@ def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
 Service = Annotated[UserService, Depends(get_service)]
 
 
-@router.post("", response_model=ApiResponse[UserRead], status_code=201)
+def read(user: User, organization_name: str | None) -> UserRead:
+    return UserRead.model_validate(user).model_copy(update={"organization_name": organization_name})
+
+
+@router.post("", response_model=ApiResponse[UserCreated], status_code=201)
 def create_user(body: UserCreate, principal: UserAdmin, service: Service):
-    return ok(UserRead.model_validate(service.create(principal, body)))
+    user, temporary_password = service.create(principal, body)
+    created = read(user, service.organization_name(user))
+    return ok(UserCreated(**created.model_dump(), temporary_password=temporary_password))
 
 
 @router.get("", response_model=ApiResponse[Page[UserRead]])
@@ -36,22 +45,36 @@ def list_users(
     service: Service,
     page: Annotated[PageParams, Depends(page_params)],
     search: Annotated[str | None, Query(max_length=100)] = None,
+    status: UserStatus | None = None,
 ):
-    items, total = service.list(principal, search=search, limit=page.limit, offset=page.offset)
-    return ok(Page(items=[UserRead.model_validate(u) for u in items], total=total, **page.model_dump()))
+    rows, total = service.list(principal, search=search, status=status, limit=page.limit, offset=page.offset)
+    return ok(Page(items=[read(user, name) for user, name in rows], total=total, **page.model_dump()))
+
+
+@router.get("/stats", response_model=ApiResponse[UserStats])
+def user_stats(principal: UserAdmin, service: Service):
+    active, inactive = service.stats(principal)
+    return ok(UserStats(total=active + inactive, active=active, inactive=inactive))
 
 
 @router.get("/{user_id}", response_model=ApiResponse[UserRead])
 def get_user(user_id: uuid.UUID, principal: CurrentPrincipal, service: Service):
-    return ok(UserRead.model_validate(service.get(principal, user_id)))
+    user = service.get(principal, user_id)
+    return ok(read(user, service.organization_name(user)))
 
 
 @router.patch("/{user_id}", response_model=ApiResponse[UserRead])
 def update_user(user_id: uuid.UUID, body: UserUpdate, principal: UserAdmin, service: Service):
-    return ok(UserRead.model_validate(service.update(principal, user_id, body)))
+    user = service.update(principal, user_id, body)
+    return ok(read(user, service.organization_name(user)))
 
 
-@router.post("/{user_id}/reset-password", response_model=ApiResponse[dict])
-def reset_password(user_id: uuid.UUID, body: PasswordReset, principal: UserAdmin, service: Service):
-    service.reset_password(principal, user_id, body.new_password)
+@router.delete("/{user_id}", response_model=ApiResponse[dict])
+def delete_user(user_id: uuid.UUID, principal: UserAdmin, service: Service):
+    service.delete(principal, user_id)
     return ok({})
+
+
+@router.post("/{user_id}/reset-password", response_model=ApiResponse[TemporaryPassword])
+def reset_password(user_id: uuid.UUID, body: PasswordReset, principal: UserAdmin, service: Service):
+    return ok(TemporaryPassword(temporary_password=service.reset_password(principal, user_id, body.new_password)))

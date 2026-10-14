@@ -377,9 +377,13 @@ export interface Answer {
 export interface Branch { id: UUID; organization_id: UUID; name: string; code: string; is_active: boolean; created_at: string }
 export interface Department extends Branch { branch_id: UUID }
 export interface User {
-  id: UUID; email: string; full_name: string; role: Me["role"]; organization_id: UUID | null;
-  branch_id: UUID | null; department_id: UUID | null; is_active: boolean; last_login_at: string | null; created_at: string;
+  id: UUID; email: string; full_name: string; phone: string | null; role: Me["role"]; organization_id: UUID | null;
+  organization_name: string | null; branch_id: UUID | null; department_id: UUID | null; is_active: boolean;
+  last_login_at: string | null; created_at: string;
 }
+/** POST /users: `temporary_password` is set, once, when the server generated it. */
+export interface UserCreated extends User { temporary_password: string | null }
+export interface UserStats { total: number; active: number; inactive: number }
 export interface Organization {
   id: UUID; name: string; slug: string; status: "active" | "suspended"; created_at: string;
   primary_color: string | null; secondary_color: string | null; contact_email: string | null;

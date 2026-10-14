@@ -37,6 +37,7 @@ const NAV: Record<Role, NavSection[]> = {
       section: "Platform",
       items: [
         { to: "/organizations", label: "Organizations", icon: Landmark, permission: "organizations:manage" },
+        { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
         { to: "/support", label: "Platform Support", icon: LifeBuoy, permission: "support" },
       ],
     },

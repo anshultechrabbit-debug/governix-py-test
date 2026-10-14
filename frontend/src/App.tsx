@@ -13,6 +13,7 @@ import { NotFoundPage } from "./pages/NotFoundPage";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { ComparePage } from "./pages/ComparePage";
+import { PlatformUsersPage } from "./pages/PlatformUsersPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { PolicyDetailPage } from "./pages/PolicyDetailPage";
 import { SupportPage } from "./pages/SupportPage";
@@ -76,7 +77,7 @@ export function App() {
           <Route path="uploads/:id" element={<Guard permission="documents:upload"><UploadBatchPage /></Guard>} />
 
           {/* Organization */}
-          <Route path="users" element={<Guard permission="users:manage"><UsersPage /></Guard>} />
+          <Route path="users" element={<Guard permission="users:manage">{me.role === "master_admin" ? <PlatformUsersPage /> : <UsersPage />}</Guard>} />
           <Route path="branches" element={<Guard permission="branches:manage"><BranchesPage /></Guard>} />
           <Route path="organizations" element={<Guard permission="organizations:manage"><OrganizationsPage /></Guard>} />
 

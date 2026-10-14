@@ -1,21 +1,22 @@
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import update
+from sqlalchemy import delete, update
 from sqlalchemy.orm import Session
 
 from app.core.database import translate_unique_violation
-from app.core.exceptions import NotFoundError, PermissionDeniedError, ValidationError
-from app.core.security import hash_password
+from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.security import generate_temporary_password, hash_password
 from app.modules.audit.service import record_event
 from app.modules.auth.model import RefreshToken
 from app.modules.auth.permissions import ASSIGNABLE_ROLES, Principal, Role
 from app.modules.branches.repository import BranchRepository
 from app.modules.departments.repository import DepartmentRepository
+from app.modules.notifications.model import Notification
 from app.modules.organizations.repository import OrganizationRepository
 from app.modules.users.model import User
 from app.modules.users.repository import UserRepository
-from app.modules.users.schema import UserCreate, UserUpdate
+from app.modules.users.schema import UserCreate, UserStatus, UserUpdate
 
 EMAIL_TAKEN = "A user with this email already exists."
 
@@ -79,16 +80,19 @@ class UserService:
 
     # --- operations --------------------------------------------------------
 
-    def create(self, principal: Principal, data: UserCreate) -> User:
+    def create(self, principal: Principal, data: UserCreate) -> tuple[User, str | None]:
+        """The new user, and its temporary password when the server generated one."""
         organization_id, branch_id, department_id = self._resolve_scope(
             principal, data.role, data.organization_id, data.branch_id, data.department_id
         )
         if self.repository.email_exists(data.email):
             raise ValidationError(EMAIL_TAKEN, code="EMAIL_TAKEN")
+        generated = None if data.password else generate_temporary_password()
         user = User(
             email=data.email.lower(),
             full_name=data.full_name,
-            password_hash=hash_password(data.password),
+            phone=data.phone,
+            password_hash=hash_password(data.password or generated),
             role=data.role,
             organization_id=organization_id,
             branch_id=branch_id,
@@ -107,7 +111,7 @@ class UserService:
                 details={"email": user.email, "role": data.role},
             )
             self.session.commit()
-        return user
+        return user, generated
 
     def get(self, principal: Principal, user_id: uuid.UUID) -> User:
         user = self.repository.get(user_id)
@@ -115,22 +119,37 @@ class UserService:
             raise NotFoundError("User not found.")
         return user
 
-    def list(
-        self, principal: Principal, *, search: str | None, limit: int, offset: int
-    ) -> tuple[list[User], int]:
+    @staticmethod
+    def _list_scope(principal: Principal) -> dict:
         if principal.role is Role.MASTER_ADMIN:
-            return self.repository.list(
-                organization_id=None, branch_id=None,
-                roles=frozenset({Role.ORG_ADMIN}), search=search, limit=limit, offset=offset,
-            )
+            # Every organization's admins, and the platform administrators themselves.
+            return {"organization_id": None, "branch_id": None,
+                    "roles": frozenset({Role.ORG_ADMIN, Role.MASTER_ADMIN})}
+        return {
+            "organization_id": principal.organization_id,
+            "branch_id": principal.branch_id if principal.role is Role.BRANCH_MANAGER else None,
+            "roles": frozenset(ASSIGNABLE_ROLES[principal.role]) if principal.role is Role.BRANCH_MANAGER else None,
+        }
+
+    def list(
+        self, principal: Principal, *, search: str | None, status: UserStatus | None = None,
+        limit: int, offset: int,
+    ) -> tuple[list[tuple[User, str | None]], int]:
         return self.repository.list(
-            organization_id=principal.organization_id,
-            branch_id=principal.branch_id if principal.role is Role.BRANCH_MANAGER else None,
-            roles=frozenset(ASSIGNABLE_ROLES[principal.role]) if principal.role is Role.BRANCH_MANAGER else None,
+            **self._list_scope(principal),
             search=search,
+            is_active=None if status is None else status == "active",
             limit=limit,
             offset=offset,
         )
+
+    def stats(self, principal: Principal) -> tuple[int, int]:
+        """(active, inactive) users the principal can list, ignoring search and filters."""
+        return self.repository.count_by_status(**self._list_scope(principal))
+
+    def organization_name(self, user: User) -> str | None:
+        organization = self.organizations.get(user.organization_id) if user.organization_id else None
+        return organization.name if organization else None
 
     def update(self, principal: Principal, user_id: uuid.UUID, data: UserUpdate) -> User:
         user = self.repository.get(user_id)
@@ -141,21 +160,48 @@ class UserService:
             changes.get("is_active") is False or "role" in changes
         ):
             raise ValidationError("You cannot deactivate yourself or change your own role.")
+        if "organization_id" in changes:
+            if changes["organization_id"] == user.organization_id:
+                del changes["organization_id"]
+            elif principal.role is not Role.MASTER_ADMIN:
+                raise PermissionDeniedError("Only the Master Admin can move a user to another organization.")
+            elif user.last_login_at is not None:
+                # Their notifications and history belong to the organization they worked in.
+                raise ConflictError(
+                    f"{user.full_name} has signed in before, so the account stays with its organization."
+                    " Add a new account in the other organization instead.",
+                    code="USER_HAS_SIGNED_IN",
+                )
 
-        scope_fields = {"role", "branch_id", "department_id"}
+        scope_fields = {"role", "organization_id", "branch_id", "department_id"}
         if scope_fields & changes.keys():
+            previous_organization_id = user.organization_id
             role = Role(changes.get("role") or user.role)
             organization_id, branch_id, department_id = self._resolve_scope(
                 principal,
                 role,
-                user.organization_id,
+                changes.get("organization_id", user.organization_id),
                 changes.get("branch_id", user.branch_id),
                 changes.get("department_id", user.department_id),
             )
-            user.role, user.branch_id, user.department_id = role, branch_id, department_id
+            user.role, user.organization_id = role, organization_id
+            user.branch_id, user.department_id = branch_id, department_id
             user.token_version += 1
+            if organization_id != previous_organization_id:
+                # Notifications name the old organization's policies and documents.
+                self.session.execute(
+                    delete(Notification).where(
+                        Notification.user_id == user.id, Notification.organization_id == previous_organization_id
+                    )
+                )
         if changes.get("full_name"):
             user.full_name = changes["full_name"]
+        if changes.get("email") and changes["email"].lower() != user.email:
+            if self.repository.email_exists(changes["email"]):
+                raise ValidationError(EMAIL_TAKEN, code="EMAIL_TAKEN")
+            user.email = changes["email"].lower()
+        if "phone" in changes:
+            user.phone = changes["phone"]
         if changes.get("is_active") is not None and changes["is_active"] != user.is_active:
             user.is_active = changes["is_active"]
             user.token_version += 1
@@ -167,14 +213,19 @@ class UserService:
             resource_type="user", resource_id=user.id,
             details={"changes": {k: str(v) for k, v in changes.items()}},
         )
-        self.session.commit()
+        with translate_unique_violation(self.session, EMAIL_TAKEN, code="EMAIL_TAKEN"):
+            self.session.commit()
         return user
 
-    def reset_password(self, principal: Principal, user_id: uuid.UUID, new_password: str) -> None:
+    def reset_password(
+        self, principal: Principal, user_id: uuid.UUID, new_password: str | None
+    ) -> str | None:
+        """Set the given password, or a generated one, which is returned."""
         user = self.repository.get(user_id)
         if user is None or not self._can_manage(principal, user):
             raise NotFoundError("User not found.")
-        user.password_hash = hash_password(new_password)
+        generated = None if new_password else generate_temporary_password()
+        user.password_hash = hash_password(new_password or generated)
         user.token_version += 1
         user.failed_login_attempts = 0
         user.locked_until = None
@@ -183,6 +234,31 @@ class UserService:
             self.session, "user.password_reset", actor=principal,
             organization_id=user.organization_id, resource_type="user", resource_id=user.id,
         )
+        self.session.commit()
+        return generated
+
+    def delete(self, principal: Principal, user_id: uuid.UUID) -> None:
+        """Remove an account that never signed in (one added by mistake).
+
+        Anyone who has signed in may have acted, and deleting them would blank their name on
+        those audit entries, so they can only be deactivated.
+        """
+        user = self.repository.get(user_id)
+        if user is None or not self._can_manage(principal, user):
+            raise NotFoundError("User not found.")
+        if user.id == principal.user_id:
+            raise ValidationError("You cannot delete yourself.")
+        if user.last_login_at is not None:
+            raise ConflictError(
+                f"{user.full_name} has signed in before, so deleting the account would remove them from the"
+                " audit trail. Suspend it instead.",
+                code="USER_HAS_SIGNED_IN",
+            )
+        record_event(
+            self.session, "user.deleted", actor=principal, organization_id=user.organization_id,
+            resource_type="user", resource_id=user.id, details={"email": user.email, "role": user.role},
+        )
+        self.session.delete(user)
         self.session.commit()
 
     def _revoke_refresh_tokens(self, user_id: uuid.UUID) -> None:

@@ -23,6 +23,11 @@ def hash_password(password: str) -> str:
     return _password_hasher.hash(password)
 
 
+def generate_temporary_password() -> str:
+    """16 random URL-safe characters: an admin passes it on and the user changes it after signing in."""
+    return secrets.token_urlsafe(12)
+
+
 def verify_password(password: str, password_hash: str | None) -> bool:
     try:
         return _password_hasher.verify(password_hash or _DUMMY_HASH, password) and bool(
