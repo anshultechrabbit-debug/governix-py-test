@@ -23,6 +23,12 @@ def admin(client, tenant):
 
 
 @pytest.fixture
+def asker(client, tenant):
+    # Organization Admins have no AI Assistant; a Branch Manager reads the organization-wide policies.
+    return login(client, tenant.manager_a)
+
+
+@pytest.fixture
 def home_loan(client, app, tenant, admin):
     """v1 (2024) covers prepayment charges; v2 (2025, in force) dropped that section."""
     v1_doc, analysis = process(client, app, tenant.admin, build(home_loan_spec("1", "01/01/2024", extra_sections=[PREPAYMENT])),
@@ -41,16 +47,16 @@ def ask(session, question, **body):
     return response.json()["data"]
 
 
-def test_the_version_in_force_answers_when_it_can(admin, home_loan):
-    answer = ask(admin, "What is the LTV for home loans above 75 lakh?")
+def test_the_version_in_force_answers_when_it_can(asker, home_loan):
+    answer = ask(asker, "What is the LTV for home loans above 75 lakh?")
     assert answer["status"] == "answered", answer
     assert {s["version_label"] for s in answer["sources"]} == {"2"}
     assert not any(s["previous_version"] for s in answer["sources"])
     assert "fallback" not in answer["plan"]
 
 
-def test_previous_version_answers_what_the_current_one_does_not_cover(admin, home_loan):
-    answer = ask(admin, "What prepayment charges apply to floating rate home loans?")
+def test_previous_version_answers_what_the_current_one_does_not_cover(asker, home_loan):
+    answer = ask(asker, "What prepayment charges apply to floating rate home loans?")
     assert answer["status"] == "answered", answer
     assert {s["version_label"] for s in answer["sources"]} == {"1"}
     assert all(s["previous_version"] for s in answer["sources"])
@@ -59,36 +65,36 @@ def test_previous_version_answers_what_the_current_one_does_not_cover(admin, hom
     assert "Home Loan Credit Policy v1" in answer["warnings"][0]
 
 
-def test_explicitly_asking_for_the_current_version_does_not_fall_back(admin, home_loan):
-    answer = ask(admin, "What prepayment charges apply to floating rate home loans?", mode="current")
+def test_explicitly_asking_for_the_current_version_does_not_fall_back(asker, home_loan):
+    answer = ask(asker, "What prepayment charges apply to floating rate home loans?", mode="current")
     assert answer["status"] == "no_answer"
     assert "fallback" not in answer["plan"]
 
 
-def test_no_version_supports_it_so_there_is_no_answer(admin, home_loan):
-    answer = ask(admin, "What is the margin requirement for gold loans against jewellery?")
+def test_no_version_supports_it_so_there_is_no_answer(asker, home_loan):
+    answer = ask(asker, "What is the margin requirement for gold loans against jewellery?")
     assert answer["status"] == "no_answer"
     assert answer["no_answer"]["reason"] in ("KEY_TERMS_NOT_FOUND", "LOW_RELEVANCE", "NO_RELEVANT_DOCUMENTS")
 
 
-def test_fallback_can_be_switched_off(app, admin, home_loan):
+def test_fallback_can_be_switched_off(app, asker, home_loan):
     app.state.settings.RAG_PREVIOUS_VERSION_FALLBACK = False
     try:
-        answer = ask(admin, "What prepayment charges apply to floating rate home loans?")
+        answer = ask(asker, "What prepayment charges apply to floating rate home loans?")
     finally:
         app.state.settings.RAG_PREVIOUS_VERSION_FALLBACK = True
     assert answer["status"] == "no_answer"
 
 
-def test_a_named_file_is_not_answered_from_another_version(admin, home_loan):
-    answer = ask(admin, "What prepayment charges apply to floating rate home loans in home_loan_2025.pdf?")
+def test_a_named_file_is_not_answered_from_another_version(asker, home_loan):
+    answer = ask(asker, "What prepayment charges apply to floating rate home loans in home_loan_2025.pdf?")
     assert answer["status"] == "no_answer"
     assert "fallback" not in answer["plan"]
     assert answer["plan"]["version_ids"] and "home_loan_2025.pdf" in answer["plan"]["explanation"]
 
 
-def test_a_named_superseded_file_answers_from_that_file(admin, home_loan):
-    answer = ask(admin, "What prepayment charges apply to floating rate home loans in home_loan_2024.pdf?")
+def test_a_named_superseded_file_answers_from_that_file(asker, home_loan):
+    answer = ask(asker, "What prepayment charges apply to floating rate home loans in home_loan_2024.pdf?")
     assert answer["status"] == "answered", answer
     assert {s["version_label"] for s in answer["sources"]} == {"1"}
     assert not any(s["previous_version"] for s in answer["sources"])
@@ -120,8 +126,8 @@ def six_versions(client, app, tenant, admin):
     return policy_id
 
 
-def test_every_earlier_version_is_searched_and_the_latest_one_that_answers_is_used(admin, six_versions):
-    answer = ask(admin, "What prepayment charges apply to floating rate home loans?")
+def test_every_earlier_version_is_searched_and_the_latest_one_that_answers_is_used(asker, six_versions):
+    answer = ask(asker, "What prepayment charges apply to floating rate home loans?")
     assert answer["status"] == "answered", answer
     assert {s["version_label"] for s in answer["sources"]} == {"2"}  # four versions back, not v1
     assert answer["plan"]["fallback"]["depth"] == 4

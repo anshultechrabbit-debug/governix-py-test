@@ -23,13 +23,13 @@ class BranchService:
 
     def create(self, principal: Principal, data: BranchCreate) -> Branch:
         organization_id = tenant_id(principal)
-        branch = Branch(organization_id=organization_id, name=data.name, code=data.code)
+        branch = Branch(organization_id=organization_id, **data.model_dump())
         with translate_unique_violation(self.session, "A branch with this code already exists."):
             self.session.add(branch)
             self.session.flush()
             record_event(
                 self.session, "branch.created", actor=principal, resource_type="branch",
-                resource_id=branch.id, details={"name": data.name, "code": data.code},
+                resource_id=branch.id, details=data.model_dump(),
             )
             self.session.commit()
         return branch

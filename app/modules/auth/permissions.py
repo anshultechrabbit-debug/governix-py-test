@@ -45,8 +45,10 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.MASTER_ADMIN: frozenset(
         {Permission.ORGANIZATIONS_MANAGE, Permission.SYSTEM_MONITOR, Permission.USERS_MANAGE, Permission.SUPPORT}
     ),
+    # The Organization Admin provisions Branch Managers and runs the knowledge base (policies,
+    # uploads); it does not use the AI Assistant, which is for the branches.
     Role.ORG_ADMIN: frozenset(
-        _TENANT_BASE
+        (_TENANT_BASE - {Permission.AI_QUERY})
         | {
             Permission.DOCUMENTS_UPLOAD,
             Permission.POLICIES_ASSIGN,
@@ -77,7 +79,8 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
 # Which roles each role may create or assign.
 ASSIGNABLE_ROLES: dict[Role, frozenset[Role]] = {
     Role.MASTER_ADMIN: frozenset({Role.ORG_ADMIN}),
-    Role.ORG_ADMIN: frozenset({Role.ORG_ADMIN, Role.BRANCH_MANAGER, Role.DEPARTMENT_USER}),
+    # Users belong to their Branch Manager; other Organization Admins are the Master Admin's.
+    Role.ORG_ADMIN: frozenset({Role.BRANCH_MANAGER}),
     Role.BRANCH_MANAGER: frozenset({Role.DEPARTMENT_USER}),
     Role.DEPARTMENT_USER: frozenset(),
 }

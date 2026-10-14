@@ -2,6 +2,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { Spinner, Toaster } from "./components/ui";
 import { AppLayout } from "./components/layout/AppLayout";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { BranchesPage } from "./pages/BranchesPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -14,7 +15,6 @@ import { NginxPage } from "./pages/NginxPage";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { ComparePage } from "./pages/ComparePage";
-import { PlatformUsersPage } from "./pages/PlatformUsersPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { PolicyDetailPage } from "./pages/PolicyDetailPage";
 import { SupportPage } from "./pages/SupportPage";
@@ -78,7 +78,7 @@ export function App() {
           <Route path="uploads/:id" element={<Guard permission="documents:upload"><UploadBatchPage /></Guard>} />
 
           {/* Organization */}
-          <Route path="users" element={<Guard permission="users:manage">{me.role === "master_admin" ? <PlatformUsersPage /> : <UsersPage />}</Guard>} />
+          <Route path="users" element={<Guard permission="users:manage">{me.role === "master_admin" || me.role === "org_admin" ? <AdminUsersPage /> : <UsersPage />}</Guard>} />
           <Route path="branches" element={<Guard permission="branches:manage"><BranchesPage /></Guard>} />
           <Route path="organizations" element={<Guard permission="organizations:manage"><OrganizationsPage /></Guard>} />
           <Route path="organizations/:id/nginx" element={<Guard permission="organizations:manage"><NginxPage /></Guard>} />

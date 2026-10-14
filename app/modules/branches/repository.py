@@ -29,3 +29,13 @@ class BranchRepository:
         total = self.session.scalar(select(func.count()).select_from(query.subquery()))
         items = self.session.scalars(query.order_by(Branch.name).limit(limit).offset(offset)).all()
         return list(items), total or 0
+
+    def named(self, organization_id: uuid.UUID, name: str) -> Branch | None:
+        return self.session.scalar(
+            select(Branch).where(Branch.organization_id == organization_id, func.lower(Branch.name) == name.lower())
+        )
+
+    def code_taken(self, organization_id: uuid.UUID, code: str) -> bool:
+        return self.session.scalar(
+            select(Branch.id).where(Branch.organization_id == organization_id, Branch.code == code)
+        ) is not None

@@ -37,7 +37,7 @@ def test_unauthorised_text_never_reaches_ai_context_or_citations(client, db, wor
     bank_a, bank_b, restricted = world
     assert ask(client, bank_a.user_a2, "What is the overnight dealer limit per desk?")["status"] == "answered"
 
-    for outsider in (bank_a.user_a1, bank_a.user_b1, bank_a.manager_b, bank_b.admin):
+    for outsider in (bank_a.user_a1, bank_a.user_b1, bank_a.manager_b, bank_b.manager_a):
         answer = ask(client, outsider, "What is the overnight dealer limit per desk?")
         assert answer["status"] == "no_answer"
         assert "50 crore" not in str(answer)

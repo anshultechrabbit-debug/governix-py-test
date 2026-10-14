@@ -24,6 +24,12 @@ def admin(client, tenant):
 
 
 @pytest.fixture
+def asker(client, tenant):
+    # Organization Admins have no AI Assistant; a Branch Manager reads the organization-wide policies.
+    return login(client, tenant.manager_a)
+
+
+@pytest.fixture
 def home_loan(client, app, tenant, admin):
     document, analysis = process(client, app, tenant.admin, build(home_loan_spec("1", "01/01/2024")))
     assert confirm_new_policy(admin, document, analysis).status_code == 200
@@ -36,54 +42,54 @@ def ask(session, question, **body):
     return response.json()["data"]
 
 
-def test_an_answer_starts_a_conversation_and_later_questions_join_it(admin, home_loan):
-    first = ask(admin, QUESTION)
+def test_an_answer_starts_a_conversation_and_later_questions_join_it(asker, home_loan):
+    first = ask(asker, QUESTION)
     conversation_id = first["conversation_id"]
     assert conversation_id
-    second = ask(admin, "What is the interest rate spread?", conversation_id=conversation_id,
+    second = ask(asker, "What is the interest rate spread?", conversation_id=conversation_id,
                  history=[{"question": QUESTION, "answer": first["answer"]}])
     assert second["conversation_id"] == conversation_id
 
-    [listed] = admin.get("/ai/conversations").json()["data"]["items"]
+    [listed] = asker.get("/ai/conversations").json()["data"]["items"]
     assert (listed["id"], listed["title"], listed["message_count"]) == (conversation_id, QUESTION, 2)
-    detail = admin.get(f"/ai/conversations/{conversation_id}").json()["data"]
+    detail = asker.get(f"/ai/conversations/{conversation_id}").json()["data"]
     assert [m["question"] for m in detail["messages"]] == [QUESTION, "What is the interest rate spread?"]
     assert detail["messages"][0]["answer"]["claims"] == first["claims"]
 
 
-def test_a_new_question_without_a_conversation_starts_another(admin, home_loan):
-    ask(admin, QUESTION)
-    ask(admin, "What is the interest rate spread?")
-    assert admin.get("/ai/conversations").json()["data"]["total"] == 2
+def test_a_new_question_without_a_conversation_starts_another(asker, home_loan):
+    ask(asker, QUESTION)
+    ask(asker, "What is the interest rate spread?")
+    assert asker.get("/ai/conversations").json()["data"]["total"] == 2
 
 
-def test_the_streamed_answer_is_saved_too(admin, home_loan):
-    response = admin.post("/ai/ask/stream", json={"question": QUESTION})
+def test_the_streamed_answer_is_saved_too(asker, home_loan):
+    response = asker.post("/ai/ask/stream", json={"question": QUESTION})
     done = next(
         json.loads(block.split("data: ", 1)[1]) for block in response.text.split("\n\n") if block.startswith("event: done")
     )
     assert done["conversation_id"]
-    assert admin.get(f"/ai/conversations/{done['conversation_id']}").json()["data"]["message_count"] == 1
+    assert asker.get(f"/ai/conversations/{done['conversation_id']}").json()["data"]["message_count"] == 1
 
 
-def test_conversations_are_private(client, tenant, admin, home_loan):
-    conversation_id = ask(admin, QUESTION)["conversation_id"]
-    other = login(client, tenant.manager_a)
+def test_conversations_are_private(client, tenant, asker, home_loan):
+    conversation_id = ask(asker, QUESTION)["conversation_id"]
+    other = login(client, tenant.manager_b)  # the asker is manager_a
     assert other.get("/ai/conversations").json()["data"]["total"] == 0
     assert other.get(f"/ai/conversations/{conversation_id}").status_code == 404
     assert other.delete(f"/ai/conversations/{conversation_id}").status_code == 404
     # Asking "into" someone else's conversation starts the asker's own instead.
     mine = other.post("/ai/ask", json={"question": QUESTION, "conversation_id": conversation_id}).json()["data"]
     assert mine["conversation_id"] != conversation_id
-    assert admin.get(f"/ai/conversations/{conversation_id}").json()["data"]["message_count"] == 1
+    assert asker.get(f"/ai/conversations/{conversation_id}").json()["data"]["message_count"] == 1
 
 
-def test_rename_delete_and_clear(admin, home_loan):
-    first = ask(admin, QUESTION)["conversation_id"]
-    ask(admin, "What is the interest rate spread?")
-    renamed = admin.patch(f"/ai/conversations/{first}", json={"title": "  LTV   limits "}).json()["data"]
+def test_rename_delete_and_clear(asker, home_loan):
+    first = ask(asker, QUESTION)["conversation_id"]
+    ask(asker, "What is the interest rate spread?")
+    renamed = asker.patch(f"/ai/conversations/{first}", json={"title": "  LTV   limits "}).json()["data"]
     assert renamed["title"] == "LTV limits"
-    assert admin.delete(f"/ai/conversations/{first}").status_code == 200
-    assert admin.get(f"/ai/conversations/{first}").status_code == 404
-    assert admin.delete("/ai/conversations").json()["data"] == {"deleted": 1}
-    assert admin.get("/ai/conversations").json()["data"]["total"] == 0
+    assert asker.delete(f"/ai/conversations/{first}").status_code == 200
+    assert asker.get(f"/ai/conversations/{first}").status_code == 404
+    assert asker.delete("/ai/conversations").json()["data"] == {"deleted": 1}
+    assert asker.get("/ai/conversations").json()["data"]["total"] == 0

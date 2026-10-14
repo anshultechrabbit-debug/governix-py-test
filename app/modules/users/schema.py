@@ -6,6 +6,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
 from app.core.security import MIN_PASSWORD_LENGTH
 from app.modules.auth.permissions import Role
+from app.modules.branches.schema import NewBranch
 
 
 def _blank_is_none(value: str | None) -> str | None:
@@ -26,6 +27,8 @@ class UserCreate(BaseModel):
     # Only the master admin chooses an organization; tenant admins create users in their own.
     organization_id: uuid.UUID | None = None
     branch_id: uuid.UUID | None = None
+    # A Branch Manager for a branch that does not exist yet: it is created with them.
+    new_branch: NewBranch | None = None
     department_id: uuid.UUID | None = None
 
 
@@ -63,6 +66,7 @@ class UserRead(BaseModel):
     organization_id: uuid.UUID | None
     organization_name: str | None = None
     branch_id: uuid.UUID | None
+    branch_name: str | None = None
     department_id: uuid.UUID | None
     is_active: bool
     last_login_at: datetime | None

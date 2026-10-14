@@ -3,6 +3,7 @@ import uuid
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from app.modules.branches.model import Branch
 from app.modules.organizations.model import Organization
 from app.modules.users.model import User
 
@@ -46,10 +47,12 @@ class UserRepository:
         is_active: bool | None = None,
         limit: int,
         offset: int,
-    ) -> tuple[list[tuple[User, str | None]], int]:
-        """Users in scope, each with its organization's name (searchable too)."""
+    ) -> tuple[list[tuple[User, str | None, str | None]], int]:
+        """Users in scope, each with its organization's and branch's names (searchable too)."""
         query = self._scoped(
-            select(User, Organization.name).outerjoin(Organization, Organization.id == User.organization_id),
+            select(User, Organization.name.label("organization_name"), Branch.name.label("branch_name"))
+            .outerjoin(Organization, Organization.id == User.organization_id)
+            .outerjoin(Branch, Branch.id == User.branch_id),
             organization_id=organization_id, branch_id=branch_id, roles=roles,
         )
         if is_active is not None:
@@ -60,10 +63,11 @@ class UserRepository:
                 func.lower(User.email).like(pattern)
                 | func.lower(User.full_name).like(pattern)
                 | func.lower(Organization.name).like(pattern)
+                | func.lower(Branch.name).like(pattern)
             )
         total = self.session.scalar(select(func.count()).select_from(query.subquery()))
         rows = self.session.execute(query.order_by(User.email).limit(limit).offset(offset)).all()
-        return [(user, name) for user, name in rows], total or 0
+        return [(user, organization, branch) for user, organization, branch in rows], total or 0
 
     def count_by_status(
         self,

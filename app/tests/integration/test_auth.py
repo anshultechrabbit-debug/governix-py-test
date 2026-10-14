@@ -13,6 +13,8 @@ from app.tests.factories import PASSWORD, login, make_org, make_tenant, make_use
 
 pytestmark = pytest.mark.integration
 
+ADDRESS = {"street_address": "1 MG Road", "state": "Maharashtra", "postal_code": "400001"}
+
 
 def test_login_me_and_permissions(client, db):
     tenant = make_tenant(db)
@@ -88,9 +90,9 @@ def test_unsafe_requests_need_their_sessions_csrf_header(client, db):
     cookie_only = {"Cookie": session_headers(admin.cookies)["Cookie"]}
     assert client.get("/auth/me", headers=cookie_only).status_code == 200  # reads need no header
     for headers in (cookie_only, {**cookie_only, CSRF_HEADER: other.cookies[CSRF_COOKIE]}):
-        response = client.post("/branches", headers=headers, json={"name": "X", "code": "X"})
+        response = client.post("/branches", headers=headers, json={"name": "X", "code": "X", **ADDRESS})
         assert response.status_code == 403 and response.json()["error"]["reason"] == "CSRF_FAILED"
-    assert admin.post("/branches", json={"name": "X", "code": "X"}).status_code == 201
+    assert admin.post("/branches", json={"name": "X", "code": "X", **ADDRESS}).status_code == 201
 
 
 def test_refresh_rotates_and_detects_reuse(client, db):
@@ -138,8 +140,8 @@ def test_logout_revokes_the_session_and_clears_cookies(client, db):
 def test_deactivation_invalidates_existing_access_tokens_immediately(client, db):
     tenant = make_tenant(db)
     user_session = login(client, tenant.user_a1)
-    admin = login(client, tenant.admin)
-    assert admin.patch(f"/users/{tenant.user_a1.id}", json={"is_active": False}).status_code == 200
+    manager = login(client, tenant.manager_a)  # a User's Branch Manager manages them
+    assert manager.patch(f"/users/{tenant.user_a1.id}", json={"is_active": False}).status_code == 200
     assert user_session.get("/auth/me").status_code == 401
 
 

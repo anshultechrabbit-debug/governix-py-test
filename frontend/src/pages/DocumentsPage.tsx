@@ -1,9 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Trash2, Upload } from "lucide-react";
+import { FileText, FolderPlus, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router";
 import { api, qs } from "../api/client";
 import type { DocumentRead, Page } from "../api/types";
+import { CreatePolicyModal } from "../components/CreatePolicyModal";
 import { canDelete, DeleteDocumentDialog } from "../components/DeleteDocument";
 import { ScopeBadge, useCategories, useCategoryName } from "../components/domain";
 import { Button, Card, EmptyState, ErrorState, Input, PageHeader, Select, SkeletonRows, StatusBadge, Table } from "../components/ui";
@@ -19,6 +20,7 @@ export function DocumentsPage() {
   const [category, setCategory] = useState("");
   const [offset, setOffset] = useState(0);
   const [deleting, setDeleting] = useState<DocumentRead | null>(null);
+  const [creatingPolicy, setCreatingPolicy] = useState(false);
   const categories = useCategories();
   const categoryName = useCategoryName();
   const params = { search, status, category_id: category, limit: PAGE_SIZE, offset };
@@ -41,8 +43,16 @@ export function DocumentsPage() {
       <PageHeader
         title="Documents"
         subtitle={subtitle}
-        actions={can("documents:upload") && <Link to="/documents/upload"><Button><Upload className="size-4" />Upload</Button></Link>}
+        actions={(can("policies:manage") || can("documents:upload")) && (
+          <>
+            {can("policies:manage") && (
+              <Button variant="secondary" onClick={() => setCreatingPolicy(true)}><FolderPlus className="size-4" />Create policy</Button>
+            )}
+            {can("documents:upload") && <Link to="/documents/upload"><Button><Upload className="size-4" />Upload</Button></Link>}
+          </>
+        )}
       />
+      <CreatePolicyModal open={creatingPolicy} onClose={() => setCreatingPolicy(false)} />
       {deleting && <DeleteDocumentDialog document={deleting} open onClose={() => setDeleting(null)} />}
       <Card>
         <div className="flex flex-wrap gap-3 border-b border-line p-4">

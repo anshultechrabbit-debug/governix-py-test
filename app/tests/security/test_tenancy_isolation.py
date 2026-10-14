@@ -5,6 +5,8 @@ from app.tests.factories import login, make_tenant, make_user
 
 pytestmark = pytest.mark.integration
 
+ADDRESS = {"street_address": "1 MG Road", "state": "Maharashtra", "postal_code": "400001"}
+
 
 @pytest.fixture
 def world(db):
@@ -30,10 +32,40 @@ def test_org_admin_cannot_attach_users_to_another_orgs_branch(client, world):
     bank_a, bank_b = world
     response = login(client, bank_a.admin).post("/users", json={
         "email": "x@example.com", "full_name": "X", "password": "long-enough-password",
-        "role": "department_user", "branch_id": str(bank_b.branch_a.id),
-        "department_id": str(bank_b.dept_a1.id),
+        "role": "branch_manager", "branch_id": str(bank_b.branch_a.id),
     })
     assert response.status_code == 422
+
+
+def test_org_admin_adds_branch_managers_only(client, world):
+    bank_a, _ = world
+    admin = login(client, bank_a.admin)
+    base = {"full_name": "New Person", "password": "long-enough-password", "branch_id": str(bank_a.branch_a.id)}
+    for role in ("department_user", "org_admin"):
+        assert admin.post("/users", json={**base, "email": f"{role}@example.com", "role": role}).status_code == 403
+    listed = admin.get("/users").json()["data"]["items"]
+    assert {u["role"] for u in listed} == {"branch_manager"}
+    assert admin.post("/ai/ask", json={"question": "What is the LTV?"}).status_code == 403
+
+
+def test_org_admin_creates_a_branch_with_its_manager(client, world):
+    bank_a, _ = world
+    admin = login(client, bank_a.admin)
+    body = {"full_name": "Asha Rao", "email": "asha@example.com", "role": "branch_manager",
+            "new_branch": {"name": "  Downtown   Main ", **ADDRESS}}
+    created = admin.post("/users", json=body)
+    assert created.status_code == 201, created.text
+    assert created.json()["data"]["branch_name"] == "Downtown Main"
+    assert created.json()["data"]["temporary_password"]
+    branch = admin.get(f"/branches/{created.json()['data']['branch_id']}").json()["data"]
+    assert branch["code"] == "DOWNTOWN-MAIN"
+    assert (branch["street_address"], branch["state"], branch["postal_code"]) == ("1 MG Road", "Maharashtra", "400001")
+    # The address is required for a new branch.
+    no_address = admin.post("/users", json={**body, "email": "asha3@example.com", "new_branch": {"name": "Uptown"}})
+    assert no_address.status_code == 422
+    # The same name again is refused rather than making a second branch called the same.
+    again = admin.post("/users", json={**body, "email": "asha2@example.com"})
+    assert again.json()["error"]["reason"] == "BRANCH_EXISTS"
 
 
 def test_branch_manager_is_confined_to_their_branch(client, world):
@@ -83,7 +115,8 @@ def test_department_user_cannot_manage_anything(client, world):
 
 def test_org_admin_audit_log_is_tenant_scoped(client, world, db):
     bank_a, bank_b = world
-    login(client, bank_b.admin).post("/branches", json={"name": "Secret Branch", "code": "SEC"})
+    created = login(client, bank_b.admin).post("/branches", json={"name": "Secret Branch", "code": "SEC", **ADDRESS})
+    assert created.status_code == 201, created.text
     events = login(client, bank_a.admin).get("/audit-events").json()["data"]["items"]
     assert all(e["organization_id"] == str(bank_a.org.id) for e in events)
     assert not any(e["action"] == "branch.created" for e in events)

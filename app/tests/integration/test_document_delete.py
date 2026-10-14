@@ -27,6 +27,12 @@ def admin(client, tenant):
 
 
 @pytest.fixture
+def asker(client, tenant):
+    # Organization Admins have no AI Assistant; a Branch Manager reads the organization-wide policies.
+    return login(client, tenant.manager_a)
+
+
+@pytest.fixture
 def home_loan(client, app, tenant, admin):
     """v1 (2024) superseded by v2 (2025, in force)."""
     v1_doc, analysis = process(client, app, tenant.admin, build(home_loan_spec("1", "01/01/2024")))
@@ -37,7 +43,7 @@ def home_loan(client, app, tenant, admin):
     return policy_id, v1_doc, v2_doc
 
 
-def test_deleting_the_version_in_force_puts_the_previous_one_back(app, db, admin, home_loan):
+def test_deleting_the_version_in_force_puts_the_previous_one_back(app, db, admin, asker, home_loan):
     policy_id, v1_doc, v2_doc = home_loan
     key = db.get(Document, v2_doc).storage_key
 
@@ -54,7 +60,7 @@ def test_deleting_the_version_in_force_puts_the_previous_one_back(app, db, admin
     event = db.scalar(select(AuditEvent).where(AuditEvent.action == "document.deleted"))
     assert event.details["version"] == "2" and "policy_deleted" not in event.details
 
-    answer = admin.post("/ai/ask", json={"question": "What is the LTV for home loans above 75 lakh?"}).json()["data"]
+    answer = asker.post("/ai/ask", json={"question": "What is the LTV for home loans above 75 lakh?"}).json()["data"]
     assert answer["status"] == "answered" and {s["version_label"] for s in answer["sources"]} == {"1"}
 
 
@@ -72,7 +78,7 @@ def test_a_department_user_cannot_delete(client, tenant, home_loan):
     assert login(client, tenant.user_a1).delete(f"/documents/{v2_doc}").status_code in (403, 404)
 
 
-def test_deleting_a_policy_deletes_every_version_document_and_file(app, db, admin, home_loan):
+def test_deleting_a_policy_deletes_every_version_document_and_file(app, db, admin, asker, home_loan):
     policy_id, v1_doc, v2_doc = home_loan
     keys = [db.get(Document, d).storage_key for d in (v1_doc, v2_doc)]
 
@@ -87,7 +93,7 @@ def test_deleting_a_policy_deletes_every_version_document_and_file(app, db, admi
     assert not any(app.state.storage.exists(key) for key in keys)
     event = db.scalar(select(AuditEvent).where(AuditEvent.action == "policy.deleted"))
     assert sorted(event.details["versions"]) == ["1", "2"]
-    answer = admin.post("/ai/ask", json={"question": "What is the LTV for home loans above 75 lakh?"}).json()["data"]
+    answer = asker.post("/ai/ask", json={"question": "What is the LTV for home loans above 75 lakh?"}).json()["data"]
     assert answer["status"] == "no_answer"
 
 

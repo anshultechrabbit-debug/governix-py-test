@@ -42,22 +42,22 @@ const NAV: Record<Role, NavSection[]> = {
       ],
     },
   ],
+  // The Organization Admin adds Branch Managers and runs the knowledge base; the AI Assistant is
+  // for the branches (no ai:query).
   org_admin: [
     {
       section: "Knowledge",
       items: [
         { to: "/", label: "Dashboard", icon: LayoutDashboard, permission: "documents:read", end: true },
-        { to: "/assistant", label: "AI Assistant", icon: Sparkles, permission: "ai:query" },
         { to: "/policies", label: "Global Policies", icon: ScrollText, permission: "policies:read" },
+        // Upload is a button on Documents, and its "Recent uploads" leads to the upload batches.
         { to: "/documents", label: "Documents", icon: FileText, permission: "documents:read" },
-        { to: "/documents/upload", label: "Upload", icon: Upload, permission: "documents:upload" },
-        { to: "/uploads", label: "Upload Batches", icon: FileStack, permission: "documents:upload" },
       ],
     },
     {
       section: "Organization",
       items: [
-        { to: "/users", label: "Users & Roles", icon: Users, permission: "users:manage" },
+        { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
         { to: "/branches", label: "Branches", icon: Building2, permission: "branches:manage" },
       ],
     },

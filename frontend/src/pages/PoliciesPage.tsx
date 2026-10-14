@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { GitCompare, ScrollText, Trash2, Upload, UploadCloud } from "lucide-react";
+import { FolderPlus, GitCompare, ScrollText, Trash2, Upload, UploadCloud } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { api, qs } from "../api/client";
 import type { Page, Policy } from "../api/types";
 import { hasRealEffectiveDate, ScopeBadge, useCategories, useCategoryName } from "../components/domain";
+import { CreatePolicyModal } from "../components/CreatePolicyModal";
 import { DeletePolicyDialog } from "../components/DeletePolicy";
 import { Badge, Button, Card, EmptyState, ErrorState, Input, Menu, PageHeader, Select, SkeletonRows, StatusBadge } from "../components/ui";
 import { formatDate } from "../lib/format";
@@ -16,6 +17,7 @@ export function PoliciesPage() {
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState("active");
   const [deleting, setDeleting] = useState<Policy | null>(null);
+  const [creatingPolicy, setCreatingPolicy] = useState(false);
   const navigate = useNavigate();
   const categories = useCategories();
   const categoryName = useCategoryName();
@@ -39,8 +41,16 @@ export function PoliciesPage() {
       <PageHeader
         title={title}
         subtitle={subtitle}
-        actions={can("documents:upload") && <Link to="/documents/upload"><Button><Upload className="size-4" />Upload</Button></Link>}
+        actions={(can("policies:manage") || can("documents:upload")) && (
+          <>
+            {can("policies:manage") && (
+              <Button variant="secondary" onClick={() => setCreatingPolicy(true)}><FolderPlus className="size-4" />Create policy</Button>
+            )}
+            {can("documents:upload") && <Link to="/documents/upload"><Button><Upload className="size-4" />Upload</Button></Link>}
+          </>
+        )}
       />
+      <CreatePolicyModal open={creatingPolicy} onClose={() => setCreatingPolicy(false)} />
       {isUser && (
         <p className="mb-4 rounded-md border border-brand-500/20 bg-brand-50 px-4 py-3 text-sm text-brand-700">
           You can ask Governix about any of these policies. Anything not assigned to you is never searched, even if it exists in the same organization.

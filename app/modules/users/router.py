@@ -28,14 +28,16 @@ def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
 Service = Annotated[UserService, Depends(get_service)]
 
 
-def read(user: User, organization_name: str | None) -> UserRead:
-    return UserRead.model_validate(user).model_copy(update={"organization_name": organization_name})
+def read(user: User, organization_name: str | None, branch_name: str | None) -> UserRead:
+    return UserRead.model_validate(user).model_copy(
+        update={"organization_name": organization_name, "branch_name": branch_name}
+    )
 
 
 @router.post("", response_model=ApiResponse[UserCreated], status_code=201)
 def create_user(body: UserCreate, principal: UserAdmin, service: Service):
     user, temporary_password = service.create(principal, body)
-    created = read(user, service.organization_name(user))
+    created = read(user, *service.names(user))
     return ok(UserCreated(**created.model_dump(), temporary_password=temporary_password))
 
 
@@ -48,7 +50,7 @@ def list_users(
     status: UserStatus | None = None,
 ):
     rows, total = service.list(principal, search=search, status=status, limit=page.limit, offset=page.offset)
-    return ok(Page(items=[read(user, name) for user, name in rows], total=total, **page.model_dump()))
+    return ok(Page(items=[read(*row) for row in rows], total=total, **page.model_dump()))
 
 
 @router.get("/stats", response_model=ApiResponse[UserStats])
@@ -60,13 +62,13 @@ def user_stats(principal: UserAdmin, service: Service):
 @router.get("/{user_id}", response_model=ApiResponse[UserRead])
 def get_user(user_id: uuid.UUID, principal: CurrentPrincipal, service: Service):
     user = service.get(principal, user_id)
-    return ok(read(user, service.organization_name(user)))
+    return ok(read(user, *service.names(user)))
 
 
 @router.patch("/{user_id}", response_model=ApiResponse[UserRead])
 def update_user(user_id: uuid.UUID, body: UserUpdate, principal: UserAdmin, service: Service):
     user = service.update(principal, user_id, body)
-    return ok(read(user, service.organization_name(user)))
+    return ok(read(user, *service.names(user)))
 
 
 @router.delete("/{user_id}", response_model=ApiResponse[dict])

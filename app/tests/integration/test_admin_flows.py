@@ -5,6 +5,8 @@ from app.tests.factories import login, make_user, session_headers
 
 pytestmark = pytest.mark.integration
 
+ADDRESS = {"street_address": "1 MG Road", "state": "Maharashtra", "postal_code": "400001"}
+
 
 def test_full_onboarding_flow(client, db):
     master = make_user(db, Role.MASTER_ADMIN)
@@ -26,10 +28,12 @@ def test_full_onboarding_flow(client, db):
     })
     headers = session_headers(admin_login.cookies)
 
-    branch = client.post("/branches", headers=headers, json={"name": "Mumbai HO", "code": "MUM"})
+    branch = client.post("/branches", headers=headers, json={"name": "Mumbai HO", "code": "MUM", **ADDRESS})
     assert branch.status_code == 201
     branch_id = branch.json()["data"]["id"]
-    assert client.post("/branches", headers=headers, json={"name": "Dup", "code": "MUM"}).status_code == 409
+    assert client.post("/branches", headers=headers, json={"name": "Dup", "code": "MUM", **ADDRESS}).status_code == 409
+    # A new branch needs its address.
+    assert client.post("/branches", headers=headers, json={"name": "Pune", "code": "PUN"}).status_code == 422
 
     dept = client.post("/departments", headers=headers, json={
         "branch_id": branch_id, "name": "Credit", "code": "CRD",
@@ -50,18 +54,19 @@ def test_full_onboarding_flow(client, db):
     assert {"branch.created", "department.created", "user.created"} <= actions
 
 
-def test_role_change_requires_valid_scope(client, db):
+def test_org_admin_moves_branch_managers_within_its_organization(client, db):
     from app.tests.factories import make_tenant
 
     tenant = make_tenant(db)
+    other = make_tenant(db)
     admin = login(client, tenant.admin)
-    # Promoting a department user to branch manager clears the department.
-    response = admin.patch(f"/users/{tenant.user_a1.id}", json={"role": "branch_manager"})
-    assert response.status_code == 200
-    assert response.json()["data"]["department_id"] is None
-    # Moving a user to a department of a different branch is rejected.
-    response = admin.patch(f"/users/{tenant.user_a2.id}", json={
-        "department_id": str(tenant.dept_b1.id),
-    })
-    assert response.status_code == 422
-    assert admin.patch(f"/users/{tenant.admin.id}", json={"is_active": False}).status_code == 422
+    response = admin.patch(f"/users/{tenant.manager_a.id}", json={"branch_id": str(tenant.branch_b.id)})
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["branch_id"] == str(tenant.branch_b.id)
+    # Another organization's branch is rejected.
+    assert admin.patch(f"/users/{tenant.manager_a.id}", json={
+        "branch_id": str(other.branch_a.id),
+    }).status_code == 422
+    # Users are their Branch Manager's, and Organization Admins the Master Admin's.
+    assert admin.patch(f"/users/{tenant.user_a1.id}", json={"role": "branch_manager"}).status_code == 404
+    assert admin.patch(f"/users/{tenant.admin.id}", json={"is_active": False}).status_code == 404

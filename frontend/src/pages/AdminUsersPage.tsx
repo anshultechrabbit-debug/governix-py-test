@@ -6,17 +6,20 @@ import {
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type { Organization, Page, User, UserCreated, UserStats } from "../api/types";
+import { BranchFields, branchBody, branchReady, EMPTY_BRANCH, type BranchDraft } from "../components/BranchFields";
+import { useBranches } from "../components/domain";
 import {
   Badge, Button, Card, EmptyState, ErrorState, Field, Input, Modal, PageHeader, Select, SkeletonRows, Stat, StatusBadge,
   Table,
 } from "../components/ui";
 import { copyText } from "../lib/clipboard";
 import { cn, formatDate } from "../lib/format";
-import { useToast } from "../store/hooks";
+import { useAuth, useToast } from "../store/hooks";
 
 /**
- * The Master Admin's Users screen: every organization's admins and the platform
- * administrators. The Master Admin may only add Organization Admins (ASSIGNABLE_ROLES).
+ * The Users screen of the two admins, who each add one role (ASSIGNABLE_ROLES): the Master Admin
+ * adds Organization Admins to organizations, an Organization Admin adds Branch Managers to
+ * branches (an existing one, or a new one created with them). Branch Managers use UsersPage.
  */
 
 const ROLE_LABEL: Record<User["role"], string> = {
@@ -31,7 +34,37 @@ const PHONE_PATTERN = "[0-9+()\\-. ]*";
 type StatusFilter = "" | "active" | "inactive";
 interface Credentials { title: string; email: string; password: string }
 
-export function PlatformUsersPage() {
+/** What differs between the two admins' pages. */
+interface Scope {
+  adds: "org_admin" | "branch_manager";
+  title: string;
+  subtitle: string;
+  place: "Organization" | "Branch";
+  placeOf: (user: User) => string;
+  emptyHint: string;
+}
+const SCOPES: Record<"master_admin" | "org_admin", Scope> = {
+  master_admin: {
+    adds: "org_admin",
+    title: "Users",
+    subtitle: "Platform administrators and the admins of every organization.",
+    place: "Organization",
+    placeOf: (user) => user.organization_name ?? (user.role === "master_admin" ? "Platform" : "—"),
+    emptyHint: "Add an organization admin to let a bank manage its own branches and users.",
+  },
+  org_admin: {
+    adds: "branch_manager",
+    title: "User management",
+    subtitle: "The Branch Managers of your organization and the branches they run. Each manager adds their branch's users.",
+    place: "Branch",
+    placeOf: (user) => user.branch_name ?? "—",
+    emptyHint: "Add a Branch Manager for each branch. They add and manage their branch's users.",
+  },
+};
+
+export function AdminUsersPage() {
+  const { me } = useAuth();
+  const scope = SCOPES[me?.role === "org_admin" ? "org_admin" : "master_admin"];
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("");
   const [pageSize, setPageSize] = useState(10);
@@ -65,8 +98,8 @@ export function PlatformUsersPage() {
   return (
     <>
       <PageHeader
-        title="Users"
-        subtitle="Platform administrators and the admins of every organization."
+        title={scope.title}
+        subtitle={scope.subtitle}
         actions={<Button onClick={() => setAdding(true)}><Plus className="size-4" />Add user</Button>}
       />
 
@@ -80,7 +113,7 @@ export function PlatformUsersPage() {
         <div className="flex flex-wrap items-center gap-3 border-b border-line p-4">
           <Input
             className="min-w-0 flex-1 sm:max-w-sm"
-            placeholder="Search by name, email or organization…"
+            placeholder={`Search by name, email or ${scope.place.toLowerCase()}…`}
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
           />
@@ -103,17 +136,17 @@ export function PlatformUsersPage() {
         ) : !data?.items.length ? (
           filtered ? (
             <EmptyState icon={<UsersIcon className="size-6" />} title="No matching users"
-              description="Try another name, email or organization, or clear the status filter." />
+              description={`Try another name, email or ${scope.place.toLowerCase()}, or clear the status filter.`} />
           ) : (
             <EmptyState icon={<UsersIcon className="size-6" />} title="No users yet"
-              description="Add an organization admin to let a bank manage its own branches and users."
+              description={scope.emptyHint}
               action={<Button onClick={() => setAdding(true)}><Plus className="size-4" />Add user</Button>} />
           )
         ) : (
           <>
-            <Table head={["User", "Role", "Organization", "Status", "Created", <span className="block text-right">Actions</span>]}>
+            <Table head={["User", "Role", scope.place, "Status", "Created", <span className="block text-right">Actions</span>]}>
               {data.items.map((user) => {
-                const manageable = user.role === "org_admin";
+                const manageable = user.role === scope.adds;
                 return (
                   <tr key={user.id}>
                     <td className="px-4 py-3">
@@ -126,9 +159,7 @@ export function PlatformUsersPage() {
                         <Shield className="size-3" />{ROLE_LABEL[user.role]}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-ink-soft">
-                      {user.organization_name ?? (user.role === "master_admin" ? "Platform" : "—")}
-                    </td>
+                    <td className="px-4 py-3 text-ink-soft">{scope.placeOf(user)}</td>
                     <td className="px-4 py-3"><StatusBadge status={user.is_active ? "active" : "suspended"} /></td>
                     <td className="whitespace-nowrap px-4 py-3 text-ink-soft">{formatDate(user.created_at)}</td>
                     <td className="px-4 py-3">
@@ -171,8 +202,8 @@ export function PlatformUsersPage() {
         )}
       </Card>
 
-      <AddUserModal open={adding} onClose={() => setAdding(false)} onCreated={setCredentials} />
-      <EditUserModal user={editing} onClose={() => setEditing(null)} />
+      <AddUserModal scope={scope} open={adding} onClose={() => setAdding(false)} onCreated={setCredentials} />
+      <EditUserModal scope={scope} user={editing} onClose={() => setEditing(null)} />
       <DeleteUserModal user={deleting} onClose={() => setDeleting(null)} />
       <ResetPasswordModal user={resetting} onClose={() => setResetting(null)} onReset={setCredentials} />
       <CredentialsModal credentials={credentials} onClose={() => setCredentials(null)} />
@@ -216,38 +247,54 @@ function Pagination({ page, pages, onChange }: { page: number; pages: number; on
   );
 }
 
-interface UserForm { firstName: string; lastName: string; email: string; phone: string; organizationId: string }
-const EMPTY_FORM: UserForm = { firstName: "", lastName: "", email: "", phone: "", organizationId: "" };
+interface UserForm {
+  firstName: string; lastName: string; email: string; phone: string;
+  /** The organization (Master Admin) or existing branch (Organization Admin) the person belongs to. */
+  placeId: string;
+  /** Organization Admin adding a Branch Manager: a new branch (with its address) or an existing one. */
+  branchMode: "new" | "existing";
+  branch: BranchDraft;
+}
 const READ_ONLY = "flex h-9 items-center gap-2 rounded-md border border-line bg-subtle px-3 text-sm text-ink-soft";
 
+const emptyForm = (scope: Scope): UserForm => ({
+  firstName: "", lastName: "", email: "", phone: "", placeId: "",
+  branchMode: scope.place === "Branch" ? "new" : "existing", branch: EMPTY_BRANCH,
+});
 const tidy = (name: string) => name.replace(/\s+/g, " ").trim();
 const fullNameOf = (form: UserForm) => tidy(`${form.firstName} ${form.lastName}`);
-const formReady = (form: UserForm) =>
-  fullNameOf(form).length >= 2 && Boolean(form.email.trim()) && Boolean(form.organizationId);
+const personReady = (form: UserForm) => fullNameOf(form).length >= 2 && Boolean(form.email.trim());
+const placeReady = (form: UserForm) => (form.branchMode === "new" ? branchReady(form.branch) : Boolean(form.placeId));
+const formReady = (form: UserForm) => personReady(form) && placeReady(form);
 
 /** A saved user in the form's fields: the name is split at its first space. */
-function formOf(user: User): UserForm {
+function formOf(user: User, scope: Scope): UserForm {
   const [firstName, ...rest] = tidy(user.full_name).split(" ");
   return {
     firstName, lastName: rest.join(" "), email: user.email, phone: user.phone ?? "",
-    organizationId: user.organization_id ?? "",
+    placeId: (scope.place === "Organization" ? user.organization_id : user.branch_id) ?? "",
+    branchMode: "existing", branch: EMPTY_BRANCH,
   };
 }
 
-function useOrganizations(enabled: boolean) {
-  return useQuery({
+interface Place { id: string; name: string; note?: string }
+
+/** The organizations (Master Admin) or branches (Organization Admin) a person can be put in. */
+function usePlaces(scope: Scope, enabled: boolean): Place[] | undefined {
+  const organizations = useQuery({
     queryKey: ["organizations"],
     queryFn: () => api.get<Page<Organization>>(`/organizations${qs({ limit: 100 })}`),
-    enabled,
+    enabled: enabled && scope.place === "Organization",
   }).data?.items;
+  const branches = useBranches().data?.items;
+  return scope.place === "Organization"
+    ? organizations?.map((o) => ({ id: o.id, name: o.name, note: o.status === "suspended" ? "suspended" : undefined }))
+    : branches?.map((b) => ({ id: b.id, name: b.name, note: b.is_active ? undefined : "inactive" }));
 }
 
-/** The fields Add and Edit share. `locked`: the organization can't be changed, and why. */
-function UserFields({ value, onChange, organizations, locked }: {
-  value: UserForm; onChange: (form: UserForm) => void; organizations?: Organization[];
-  locked?: { organization: string; reason: string };
-}) {
-  const set = (field: keyof UserForm) => (e: { target: { value: string } }) =>
+/** Who the person is: the same in Add and Edit, for both admins. */
+function PersonFields({ value, onChange }: { value: UserForm; onChange: (form: UserForm) => void }) {
+  const set = (field: "firstName" | "lastName" | "email" | "phone") => (e: { target: { value: string } }) =>
     onChange({ ...value, [field]: e.target.value });
   return (
     <>
@@ -265,44 +312,89 @@ function UserFields({ value, onChange, organizations, locked }: {
       <Field label="Phone number" hint="Optional">
         <Input type="tel" pattern={PHONE_PATTERN} maxLength={50} placeholder="+91 98765 43210" value={value.phone} onChange={set("phone")} />
       </Field>
+    </>
+  );
+}
+
+function RoleField({ scope }: { scope: Scope }) {
+  return (
+    <Field label="Role">
+      <p className={READ_ONLY}><Shield className="size-4 text-brand-600" />{ROLE_LABEL[scope.adds]}</p>
+    </Field>
+  );
+}
+
+/** The existing organization or branch, and the role. `locked`: the place can't be changed, and why. */
+function PlaceFields({ scope, value, onChange, places, locked }: {
+  scope: Scope; value: UserForm; onChange: (form: UserForm) => void; places?: Place[];
+  locked?: { place: string; reason: string };
+}) {
+  return (
+    <>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field label="Organization">
+        <Field label={scope.place}>
           {locked ? (
-            <p className={READ_ONLY}><Building2 className="size-4 shrink-0" /><span className="truncate">{locked.organization}</span></p>
+            <p className={READ_ONLY}><Building2 className="size-4 shrink-0" /><span className="truncate">{locked.place}</span></p>
           ) : (
-            <Select required value={value.organizationId} onChange={set("organizationId")}>
-              <option value="">Select organization…</option>
-              {organizations?.map((o) => (
-                <option key={o.id} value={o.id}>{o.name}{o.status === "suspended" ? " (suspended)" : ""}</option>
-              ))}
+            <Select required value={value.placeId} onChange={(e) => onChange({ ...value, placeId: e.target.value })}>
+              <option value="">Select {scope.place.toLowerCase()}…</option>
+              {places?.map((p) => <option key={p.id} value={p.id}>{p.name}{p.note ? ` (${p.note})` : ""}</option>)}
             </Select>
           )}
         </Field>
-        <Field label="Role">
-          <p className={READ_ONLY}><Shield className="size-4 text-brand-600" />Organization Admin</p>
-        </Field>
+        <RoleField scope={scope} />
       </div>
       {locked && <p className="text-xs text-muted">{locked.reason}</p>}
     </>
   );
 }
 
-function AddUserModal({ open, onClose, onCreated }: {
-  open: boolean; onClose: () => void; onCreated: (credentials: Credentials) => void;
+/** "1 User details — 2 Branch details". */
+function Steps({ step }: { step: 1 | 2 }) {
+  const pill = (n: 1 | 2, label: string) => (
+    <span className={cn(
+      "inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium",
+      step === n ? "bg-brand-600 text-white" : "border border-line bg-subtle text-ink-soft",
+    )}>
+      {n < step
+        ? <Check className="size-3.5 text-ok-600" />
+        : <span className={cn("flex size-4 items-center justify-center rounded-full text-[10px]", step === n ? "bg-white/25" : "bg-line")}>{n}</span>}
+      {label}
+    </span>
+  );
+  return (
+    <div className="flex items-center justify-center gap-2" aria-label={`Step ${step} of 2`}>
+      {pill(1, "User details")}
+      <span className={cn("h-px w-8", step === 2 ? "bg-brand-600" : "bg-line")} />
+      {pill(2, "Branch details")}
+    </div>
+  );
+}
+
+function AddUserModal({ scope, open, onClose, onCreated }: {
+  scope: Scope; open: boolean; onClose: () => void; onCreated: (credentials: Credentials) => void;
 }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState(() => emptyForm(scope));
+  // An Organization Admin adds a Branch Manager in two steps: the person, then their branch.
+  const twoSteps = scope.place === "Branch";
+  const [step, setStep] = useState<1 | 2>(1);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    if (open) { setForm(EMPTY_FORM); setError(null); }
-  }, [open]);
-  const organizations = useOrganizations(open);
+    if (open) { setForm(emptyForm(scope)); setStep(1); setError(null); }
+  }, [open, scope]);
+  const places = usePlaces(scope, open);
   const ready = formReady(form);
+  const onStepOne = twoSteps && step === 1;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (onStepOne) {
+      if (personReady(form)) setStep(2);
+      return;
+    }
     if (!ready) return;
     setBusy(true);
     setError(null);
@@ -311,53 +403,103 @@ function AddUserModal({ open, onClose, onCreated }: {
         full_name: fullNameOf(form),
         email: form.email.trim(),
         phone: form.phone.trim() || null,
-        role: "org_admin",
-        organization_id: form.organizationId,
+        role: scope.adds,
+        ...(scope.place === "Organization" ? { organization_id: form.placeId }
+          : form.branchMode === "new" ? { new_branch: branchBody(form.branch) } : { branch_id: form.placeId }),
       });
       void queryClient.invalidateQueries({ queryKey: ["users"] });
-      toast("ok", `${created.full_name} added as Organization Admin of ${created.organization_name ?? "the organization"}.`);
+      if (form.branchMode === "new" && twoSteps) void queryClient.invalidateQueries({ queryKey: ["branches"] });
+      toast("ok", `${created.full_name} added as ${ROLE_LABEL[scope.adds]} of ${scope.placeOf(created)}.`);
       onClose();
       if (created.temporary_password) {
         onCreated({ title: "User added", email: created.email, password: created.temporary_password });
       }
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not add the user.");
+      if (twoSteps && err instanceof ApiError && err.code === "EMAIL_TAKEN") setStep(1);
     } finally {
       setBusy(false);
     }
   }
 
+  const description = !twoSteps
+    ? "Create an organization admin account and assign its organization."
+    : step === 1 ? "Step 1 of 2: the Branch Manager's details." : "Step 2 of 2: the branch they run.";
+  const footer = !twoSteps ? (
+    <><Button variant="secondary" onClick={onClose}>Cancel</Button>
+      <Button type="submit" form="add-user-form" loading={busy} disabled={!ready}>Add user</Button></>
+  ) : step === 1 ? (
+    <><Button variant="secondary" onClick={onClose}>Cancel</Button>
+      <Button type="submit" form="add-user-form" disabled={!personReady(form)}>Next: branch details<ChevronRight className="size-4" /></Button></>
+  ) : (
+    <><Button variant="secondary" onClick={() => setStep(1)}><ChevronLeft className="size-4" />Previous</Button>
+      <Button type="submit" form="add-user-form" loading={busy} disabled={!ready}>Add user</Button></>
+  );
+
   return (
-    <Modal open={open} onClose={onClose} icon={<UserPlus className="size-5" />} title="Add user"
-      description="Create an organization admin account and assign its organization."
-      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button type="submit" form="add-user-form" loading={busy} disabled={!ready}>Add user</Button></>}>
+    <Modal open={open} onClose={onClose} icon={<UserPlus className="size-5" />} title="Add user" description={description} footer={footer}>
       <form id="add-user-form" onSubmit={submit} className="space-y-4">
-        <UserFields value={form} onChange={setForm} organizations={organizations} />
-        <p className="text-xs text-muted">
-          A temporary password is generated and shown once after the account is created.
-        </p>
+        {twoSteps && <Steps step={step} />}
+        {!twoSteps ? (
+          <>
+            <PersonFields value={form} onChange={setForm} />
+            <PlaceFields scope={scope} value={form} onChange={setForm} places={places} />
+          </>
+        ) : step === 1 ? (
+          <>
+            <PersonFields value={form} onChange={setForm} />
+            <RoleField scope={scope} />
+          </>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-1 rounded-lg bg-subtle p-1" role="radiogroup" aria-label="Branch">
+              {(["new", "existing"] as const).map((mode) => (
+                <button key={mode} type="button" role="radio" aria-checked={form.branchMode === mode}
+                  onClick={() => setForm({ ...form, branchMode: mode })}
+                  className={cn("rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+                    form.branchMode === mode ? "bg-surface text-ink shadow-sm" : "text-muted hover:text-ink")}>
+                  {mode === "new" ? "New branch" : "Existing branch"}
+                </button>
+              ))}
+            </div>
+            {form.branchMode === "new" ? (
+              <BranchFields value={form.branch} onChange={(branch) => setForm({ ...form, branch })} autoFocus />
+            ) : (
+              <Field label="Branch" hint={places && !places.length ? "No branches yet: create a new one." : undefined}>
+                <Select required autoFocus value={form.placeId} onChange={(e) => setForm({ ...form, placeId: e.target.value })}>
+                  <option value="">Select branch…</option>
+                  {places?.map((p) => <option key={p.id} value={p.id}>{p.name}{p.note ? ` (${p.note})` : ""}</option>)}
+                </Select>
+              </Field>
+            )}
+          </>
+        )}
+        {!onStepOne && (
+          <p className="text-xs text-muted">A temporary password is generated and shown once after the account is created.</p>
+        )}
         {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-sm text-bad-600" role="alert">{error}</p>}
       </form>
     </Modal>
   );
 }
 
-function EditUserModal({ user, onClose }: { user: User | null; onClose: () => void }) {
+function EditUserModal({ scope, user, onClose }: { scope: Scope; user: User | null; onClose: () => void }) {
   const queryClient = useQueryClient();
   const toast = useToast();
-  const [form, setForm] = useState(EMPTY_FORM);
+  const [form, setForm] = useState(() => emptyForm(scope));
   const [active, setActive] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!user) return;
-    setForm(formOf(user)); setActive(user.is_active); setError(null);
-  }, [user]);
+    setForm(formOf(user, scope)); setActive(user.is_active); setError(null);
+  }, [user, scope]);
   // Someone who signed in has notifications and history in their organization, so only an
-  // account that never signed in (added to the wrong organization) can move (the backend enforces it).
-  const movable = !user?.last_login_at;
-  const organizations = useOrganizations(Boolean(user) && movable);
+  // account that never signed in (added to the wrong organization) can move to another
+  // (the backend enforces it). A Branch Manager can move between branches of the organization.
+  const movable = scope.place === "Branch" || !user?.last_login_at;
+  const places = usePlaces(scope, Boolean(user) && movable);
+  const placeField = scope.place === "Organization" ? "organization_id" : "branch_id";
 
   // Only what changed is sent, so the audit entry lists the real changes.
   const changes: Record<string, unknown> = {};
@@ -365,7 +507,7 @@ function EditUserModal({ user, onClose }: { user: User | null; onClose: () => vo
     if (fullNameOf(form) !== tidy(user.full_name)) changes.full_name = fullNameOf(form);
     if (form.email.trim().toLowerCase() !== user.email) changes.email = form.email.trim();
     if ((form.phone.trim() || null) !== user.phone) changes.phone = form.phone.trim() || null;
-    if (form.organizationId !== (user.organization_id ?? "")) changes.organization_id = form.organizationId;
+    if (form.placeId !== (user[placeField] ?? "")) changes[placeField] = form.placeId;
     if (active !== user.is_active) changes.is_active = active;
   }
   const changed = Object.keys(changes).length > 0;
@@ -378,8 +520,8 @@ function EditUserModal({ user, onClose }: { user: User | null; onClose: () => vo
     try {
       const saved = await api.patch<User>(`/users/${user.id}`, changes);
       void queryClient.invalidateQueries({ queryKey: ["users"] });
-      toast("ok", "organization_id" in changes
-        ? `${saved.full_name} moved to ${saved.organization_name ?? "the new organization"}.`
+      toast("ok", placeField in changes
+        ? `${saved.full_name} moved to ${scope.placeOf(saved)}.`
         : `${saved.full_name} updated.`);
       onClose();
     } catch (err) {
@@ -391,16 +533,18 @@ function EditUserModal({ user, onClose }: { user: User | null; onClose: () => vo
 
   return (
     <Modal open={Boolean(user)} onClose={onClose} icon={<Pencil className="size-5" />} title={`Edit ${user?.full_name ?? "user"}`}
-      description="Change the account's details, organization and status."
+      description={`Change the account's details, ${scope.place.toLowerCase()} and status.`}
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
         <Button type="submit" form="edit-user-form" loading={busy} disabled={!formReady(form) || !changed}>Save</Button></>}>
       <form id="edit-user-form" onSubmit={save} className="space-y-4">
-        <UserFields
+        <PersonFields value={form} onChange={setForm} />
+        <PlaceFields
+          scope={scope}
           value={form}
           onChange={setForm}
-          organizations={organizations}
+          places={places}
           locked={movable ? undefined : {
-            organization: user?.organization_name ?? "—",
+            place: user ? scope.placeOf(user) : "—",
             reason: `${user?.full_name} has signed in before, so the account stays with its organization. To give them access to another organization, add a new account there.`,
           }}
         />

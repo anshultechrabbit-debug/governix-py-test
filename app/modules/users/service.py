@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -9,7 +10,9 @@ from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedEr
 from app.core.security import generate_temporary_password, hash_password
 from app.modules.audit.service import record_event
 from app.modules.auth.model import RefreshToken
-from app.modules.auth.permissions import ASSIGNABLE_ROLES, Principal, Role
+from app.modules.auth.permissions import ASSIGNABLE_ROLES, Permission, Principal, Role
+from app.modules.branches.model import Branch
+from app.modules.branches.schema import NewBranch
 from app.modules.branches.repository import BranchRepository
 from app.modules.departments.repository import DepartmentRepository
 from app.modules.notifications.model import Notification
@@ -82,11 +85,16 @@ class UserService:
 
     def create(self, principal: Principal, data: UserCreate) -> tuple[User, str | None]:
         """The new user, and its temporary password when the server generated one."""
-        organization_id, branch_id, department_id = self._resolve_scope(
-            principal, data.role, data.organization_id, data.branch_id, data.department_id
-        )
+        if data.role not in ASSIGNABLE_ROLES[principal.role]:  # before anything that reveals data
+            raise PermissionDeniedError(f"You cannot assign the role {data.role}.")
         if self.repository.email_exists(data.email):
             raise ValidationError(EMAIL_TAKEN, code="EMAIL_TAKEN")
+        branch_id = data.branch_id
+        if data.role is Role.BRANCH_MANAGER and branch_id is None and data.new_branch is not None:
+            branch_id = self._new_branch(principal, data.new_branch)
+        organization_id, branch_id, department_id = self._resolve_scope(
+            principal, data.role, data.organization_id, branch_id, data.department_id
+        )
         generated = None if data.password else generate_temporary_password()
         user = User(
             email=data.email.lower(),
@@ -113,6 +121,31 @@ class UserService:
             self.session.commit()
         return user, generated
 
+    def _new_branch(self, principal: Principal, details: NewBranch) -> uuid.UUID:
+        """The branch a new Branch Manager is created with (Add user > new branch), in their transaction."""
+        if not principal.has(Permission.BRANCHES_MANAGE) or principal.organization_id is None:
+            raise PermissionDeniedError("You cannot create branches.")
+        organization_id = principal.organization_id
+        name = " ".join(details.name.split())
+        if self.branches.named(organization_id, name) is not None:
+            raise ValidationError(
+                f"A branch named “{name}” already exists. Choose it from the list.", code="BRANCH_EXISTS"
+            )
+        # A code like the ones admins type on the Branches page: "Downtown Main" -> DOWNTOWN-MAIN.
+        base = re.sub(r"[^A-Z0-9]+", "-", name.upper()).strip("-")[:40] or "BRANCH"
+        code, suffix = base, 2
+        while self.branches.code_taken(organization_id, code):
+            code, suffix = f"{base}-{suffix}", suffix + 1
+        address = details.model_dump(exclude={"name"})
+        branch = Branch(organization_id=organization_id, name=name, code=code, **address)
+        self.session.add(branch)
+        self.session.flush()
+        record_event(
+            self.session, "branch.created", actor=principal, resource_type="branch",
+            resource_id=branch.id, details={"name": name, "code": code, **address},
+        )
+        return branch.id
+
     def get(self, principal: Principal, user_id: uuid.UUID) -> User:
         user = self.repository.get(user_id)
         if user is None or (user.id != principal.user_id and not self._can_manage(principal, user)):
@@ -125,16 +158,18 @@ class UserService:
             # Every organization's admins, and the platform administrators themselves.
             return {"organization_id": None, "branch_id": None,
                     "roles": frozenset({Role.ORG_ADMIN, Role.MASTER_ADMIN})}
+        # The people the principal manages: an Organization Admin's Branch Managers, a Branch
+        # Manager's Users.
         return {
             "organization_id": principal.organization_id,
             "branch_id": principal.branch_id if principal.role is Role.BRANCH_MANAGER else None,
-            "roles": frozenset(ASSIGNABLE_ROLES[principal.role]) if principal.role is Role.BRANCH_MANAGER else None,
+            "roles": frozenset(ASSIGNABLE_ROLES[principal.role]),
         }
 
     def list(
         self, principal: Principal, *, search: str | None, status: UserStatus | None = None,
         limit: int, offset: int,
-    ) -> tuple[list[tuple[User, str | None]], int]:
+    ) -> tuple[list[tuple[User, str | None, str | None]], int]:
         return self.repository.list(
             **self._list_scope(principal),
             search=search,
@@ -147,9 +182,14 @@ class UserService:
         """(active, inactive) users the principal can list, ignoring search and filters."""
         return self.repository.count_by_status(**self._list_scope(principal))
 
-    def organization_name(self, user: User) -> str | None:
+    def names(self, user: User) -> tuple[str | None, str | None]:
+        """The user's organization and branch names."""
         organization = self.organizations.get(user.organization_id) if user.organization_id else None
-        return organization.name if organization else None
+        branch = (
+            self.branches.get_in_org(user.organization_id, user.branch_id)
+            if user.organization_id and user.branch_id else None
+        )
+        return (organization.name if organization else None), (branch.name if branch else None)
 
     def update(self, principal: Principal, user_id: uuid.UUID, data: UserUpdate) -> User:
         user = self.repository.get(user_id)

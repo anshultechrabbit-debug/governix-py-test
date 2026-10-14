@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Plus } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { Building2, Pencil, Plus } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type { Branch, Page } from "../api/types";
+import { BranchFields, branchAddress, branchBody, branchReady, EMPTY_BRANCH, type BranchDraft } from "../components/BranchFields";
 import {
   Button,
   Card,
@@ -25,7 +26,8 @@ export function BranchesPage() {
   const toast = useToast();
 
   const [modalOpen, setModalOpen] = useState(false);
-  const [name, setName] = useState("");
+  const [editing, setEditing] = useState<Branch | null>(null);
+  const [branch, setBranch] = useState<BranchDraft>(EMPTY_BRANCH);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -38,10 +40,11 @@ export function BranchesPage() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      await api.post<Branch>("/branches", { name, code: code.toUpperCase() });
-      toast("ok", `Branch "${name}" created.`);
+      const body = branchBody(branch);
+      await api.post<Branch>("/branches", { ...body, code: code.toUpperCase() });
+      toast("ok", `Branch "${body.name}" created.`);
       setModalOpen(false);
-      setName("");
+      setBranch(EMPTY_BRANCH);
       setCode("");
       queryClient.invalidateQueries({ queryKey: ["branches"] });
     } catch (err) {
@@ -96,23 +99,33 @@ export function BranchesPage() {
             }
           />
         ) : (
-          <Table head={["Branch Name", "Code", "Status", "Created", "Actions"]}>
+          <Table head={["Branch Name", "Code", "Address", "Status", "Created", "Actions"]}>
             {data.items.map((branch) => (
               <tr key={branch.id}>
                 <td className="px-4 py-3 font-medium text-ink">{branch.name}</td>
                 <td className="px-4 py-3 font-mono text-xs text-muted">{branch.code}</td>
+                <td className="px-4 py-3 text-ink-soft">
+                  {branchAddress(branch) ?? <span className="text-muted">Not set</span>}
+                </td>
                 <td className="px-4 py-3">
                   <StatusBadge status={branch.is_active ? "active" : "suspended"} />
                 </td>
                 <td className="px-4 py-3 text-ink-soft">{formatDateTime(branch.created_at)}</td>
                 <td className="px-4 py-3">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => toggleStatus(branch)}
-                  >
-                    {branch.is_active ? "Deactivate" : "Activate"}
-                  </Button>
+                  <div className="flex gap-1">
+                    {can("branches:manage") && (
+                      <Button variant="ghost" size="sm" onClick={() => setEditing(branch)}>
+                        <Pencil className="size-3.5" />Edit
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => toggleStatus(branch)}
+                    >
+                      {branch.is_active ? "Deactivate" : "Activate"}
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -133,7 +146,7 @@ export function BranchesPage() {
               type="submit"
               form="create-branch-form"
               loading={submitting}
-              disabled={!name.trim() || !code.trim()}
+              disabled={!branchReady(branch) || !code.trim()}
             >
               Create branch
             </Button>
@@ -141,14 +154,7 @@ export function BranchesPage() {
         }
       >
         <form id="create-branch-form" onSubmit={handleCreate} className="space-y-4">
-          <Field label="Branch name" hint="e.g. Headquarters, Mumbai Regional Office">
-            <Input
-              required
-              placeholder="Headquarters"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-          </Field>
+          <BranchFields value={branch} onChange={setBranch} />
           <Field label="Branch code" hint="Short unique identifier, e.g. HQ, MUM-01">
             <Input
               required
@@ -159,6 +165,55 @@ export function BranchesPage() {
           </Field>
         </form>
       </Modal>
+
+      <EditBranchModal branch={editing} onClose={() => setEditing(null)} />
     </>
+  );
+}
+
+/** Name and address. Branches made before addresses were kept get theirs here. */
+function EditBranchModal({ branch, onClose }: { branch: Branch | null; onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const toast = useToast();
+  const [draft, setDraft] = useState<BranchDraft>(EMPTY_BRANCH);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!branch) return;
+    setDraft({
+      name: branch.name, street_address: branch.street_address ?? "", state: branch.state ?? "",
+      postal_code: branch.postal_code ?? "",
+    });
+    setError(null);
+  }, [branch]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!branch || !branchReady(draft)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.patch<Branch>(`/branches/${branch.id}`, branchBody(draft));
+      toast("ok", `Branch "${draft.name.trim()}" updated.`);
+      void queryClient.invalidateQueries({ queryKey: ["branches"] });
+      void queryClient.invalidateQueries({ queryKey: ["users"] }); // the Users page shows branch names
+      onClose();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not save.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open={Boolean(branch)} onClose={onClose} icon={<Pencil className="size-5" />} title={`Edit ${branch?.name ?? "branch"}`}
+      description={branch ? `Code ${branch.code}` : undefined}
+      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button type="submit" form="edit-branch-form" loading={busy} disabled={!branchReady(draft)}>Save</Button></>}>
+      <form id="edit-branch-form" onSubmit={save} className="space-y-4">
+        <BranchFields value={draft} onChange={setDraft} />
+        {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-sm text-bad-600" role="alert">{error}</p>}
+      </form>
+    </Modal>
   );
 }

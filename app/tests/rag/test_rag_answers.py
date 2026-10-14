@@ -51,6 +51,12 @@ def admin(client, tenant):
 
 
 @pytest.fixture
+def asker(client, tenant):
+    # Organization Admins have no AI Assistant; a Branch Manager reads the organization-wide policies.
+    return login(client, tenant.manager_a)
+
+
+@pytest.fixture
 def home_loan(client, app, tenant, admin):
     v3_doc, analysis = process(client, app, tenant.admin, build(V3))
     policy_id = confirm_new_policy(admin, v3_doc, analysis).json()["data"]["policy_id"]
@@ -66,8 +72,8 @@ def ask(session, question, **body):
     return response.json()["data"]
 
 
-def test_current_question_is_answered_from_the_version_in_force(db, admin, home_loan):
-    answer = ask(admin, "What is the current LTV for home loans above 75 lakh?")
+def test_current_question_is_answered_from_the_version_in_force(db, asker, home_loan):
+    answer = ask(asker, "What is the current LTV for home loans above 75 lakh?")
     assert answer["status"] == "answered", answer
     assert "70%" in answer["answer"] and "75%" not in answer["answer"].replace("75 lakh", "")
     assert answer["plan"]["query_class"] == "current"
@@ -85,31 +91,31 @@ def test_current_question_is_answered_from_the_version_in_force(db, admin, home_
     assert answer["query_id"] == str(event.id)
 
 
-def test_historical_question_uses_the_version_then_in_force(admin, home_loan):
-    answer = ask(admin, "What was the LTV for loans above 75 lakh in March 2025?")
+def test_historical_question_uses_the_version_then_in_force(asker, home_loan):
+    answer = ask(asker, "What was the LTV for loans above 75 lakh in March 2025?")
     assert answer["plan"]["query_class"] == "historical" and answer["plan"]["as_of"] == "2025-03-31"
     assert "75%" in answer["answer"]
     assert {s["version_label"] for s in answer["sources"]} == {"3"}
 
 
-def test_ui_selected_historical_date(admin, home_loan):
-    answer = ask(admin, "LTV for loans above 75 lakh", mode="historical", as_of="2025-06-01")
+def test_ui_selected_historical_date(asker, home_loan):
+    answer = ask(asker, "LTV for loans above 75 lakh", mode="historical", as_of="2025-06-01")
     assert {s["version_label"] for s in answer["sources"]} == {"3"}
 
 
-def test_comparison_uses_the_deterministic_diff(admin, home_loan):
-    answer = ask(admin, "What's changed between v3 and v4 of the home loan credit policy?")
+def test_comparison_uses_the_deterministic_diff(asker, home_loan):
+    answer = ask(asker, "What's changed between v3 and v4 of the home loan credit policy?")
     assert answer["plan"]["query_class"] == "comparison"
     assert answer["status"] == "answered", answer
     assert any(s["kind"] == "comparison" for s in answer["sources"])
     assert "75% → 70%" in answer["answer"] or "70%" in answer["answer"]
 
 
-def test_unanswerable_question_returns_no_answer_without_calling_the_llm(admin, home_loan):
+def test_unanswerable_question_returns_no_answer_without_calling_the_llm(asker, home_loan):
     scripted = ScriptedLLM()
     get_runtime().overrides["llm"] = scripted
     get_runtime().__dict__.pop("llm", None)
-    answer = ask(admin, "What is the margin requirement for gold loans against jewellery?")
+    answer = ask(asker, "What is the margin requirement for gold loans against jewellery?")
     assert answer["status"] == "no_answer"
     assert answer["no_answer"]["reason"] in ("KEY_TERMS_NOT_FOUND", "LOW_RELEVANCE", "NO_RELEVANT_DOCUMENTS")
     assert "gold" in answer["no_answer"]["missing_terms"] or answer["no_answer"]["reason"] != "KEY_TERMS_NOT_FOUND"
@@ -126,46 +132,46 @@ def _use(llm):
     get_runtime().__dict__.pop("llm", None)
 
 
-def test_hallucinated_number_is_removed(admin, home_loan):
+def test_hallucinated_number_is_removed(asker, home_loan):
     _use(ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 80%.", "evidence_ids": ["E1"]}]))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "no_answer"
     assert answer["no_answer"]["reason"] == "ANSWER_FAILED_VALIDATION"
 
 
-def test_the_model_saying_the_evidence_does_not_answer_wins_over_its_claims(admin, home_loan):
+def test_the_model_saying_the_evidence_does_not_answer_wins_over_its_claims(asker, home_loan):
     # Q245 of the policy evaluation: asked about gold loans, the model flagged the evidence as
     # insufficient but also stated the (true) home loan LTV. That is not an answer.
     _use(ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}],
                      insufficient=True))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "no_answer"
     assert answer["no_answer"]["reason"] == "INSUFFICIENT_EVIDENCE"
 
 
-def test_a_temporary_failure_is_tried_again_not_served_from_the_cache(admin, home_loan):
+def test_a_temporary_failure_is_tried_again_not_served_from_the_cache(asker, home_loan):
     # A long chat (turns 10 and 12): a timed-out question asked again returned the same failure from the cache.
     down = ScriptedLLM(fail=True)
     _use(down)
-    first = ask(admin, "What is the LTV for loans above 75 lakh?")
+    first = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert first["status"] == "no_answer" and first["no_answer"]["reason"] == "LLM_UNAVAILABLE"
     _use(ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}]))
-    again = ask(admin, "What is the LTV for loans above 75 lakh?")
+    again = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert not again["cache_hit"] and again["status"] == "answered"
 
 
-def test_a_short_follow_up_is_cached_per_conversation(admin, home_loan):
+def test_a_short_follow_up_is_cached_per_conversation(asker, home_loan):
     # "What about mortgage?" after one conversation is not the same question after another.
     _use(ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}]))
     one = [{"question": "What is the LTV for loans above 75 lakh?", "answer": "70%."}]
     other = [{"question": "Who approves home loans?", "answer": "The credit committee."}]
-    first = ask(admin, "What is the limit?", history=one)
-    assert not ask(admin, "What is the limit?", history=other)["cache_hit"]
+    first = ask(asker, "What is the limit?", history=one)
+    assert not ask(asker, "What is the limit?", history=other)["cache_hit"]
     if first["status"] == "answered":
-        assert ask(admin, "What is the limit?", history=one)["cache_hit"]
+        assert ask(asker, "What is the limit?", history=one)["cache_hit"]
 
 
-def test_every_version_a_question_asks_about_is_searched_on_its_own(admin, home_loan, monkeypatch):
+def test_every_version_a_question_asks_about_is_searched_on_its_own(asker, home_loan, monkeypatch):
     from app.modules.rag import service as rag_service
 
     seen = []
@@ -178,7 +184,7 @@ def test_every_version_a_question_asks_about_is_searched_on_its_own(admin, home_
 
     monkeypatch.setattr(rag_service, "build_evidence", capture)
     _use(ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}]))
-    ask(admin, "What is the LTV for loans above 75 lakh in all versions of the Home Loan Credit Policy?")
+    ask(asker, "What is the LTV for loans above 75 lakh in all versions of the Home Loan Credit Policy?")
     assert seen and {"3", "4"} <= seen[0]
 
 
@@ -197,9 +203,9 @@ class _Spanish(ScriptedLLM):
         return super().generate_json(system, user, schema, context=context)
 
 
-def test_a_question_in_another_language_is_answered_in_it(admin, home_loan):
+def test_a_question_in_another_language_is_answered_in_it(asker, home_loan):
     _use(_Spanish([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}]))
-    answer = ask(admin, "¿Cuál es el LTV para préstamos de más de 75 lakh?")
+    answer = ask(asker, "¿Cuál es el LTV para préstamos de más de 75 lakh?")
     assert answer["status"] == "answered", answer
     assert answer["claims"][0]["text"].startswith("ES: ") and "70%" in answer["claims"][0]["text"]
     assert answer["plan"]["answer_language"] == "Spanish"
@@ -228,10 +234,10 @@ class _Picker(ScriptedLLM):
         return super().generate_json(system, user, schema, context=context)
 
 
-def test_a_small_model_answers_by_picking_sentences_that_are_quoted_as_written(admin, home_loan, settings):
+def test_a_small_model_answers_by_picking_sentences_that_are_quoted_as_written(asker, home_loan, settings):
     settings.RAG_ANSWER_MODE = "select"
     _use(_Picker())
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "answered", answer
     quoted = answer["claims"][0]
     assert "70%" in quoted["text"]
@@ -239,20 +245,20 @@ def test_a_small_model_answers_by_picking_sentences_that_are_quoted_as_written(a
     assert quoted["text"] in " ".join(source["excerpt"].split())  # word for word, from the passage it cites
 
 
-def test_a_pick_its_own_check_rejects_is_no_answer(admin, home_loan, settings):
+def test_a_pick_its_own_check_rejects_is_no_answer(asker, home_loan, settings):
     settings.RAG_ANSWER_MODE = "select"
     _use(_Picker(verdict=False))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "no_answer" and answer["no_answer"]["reason"] == "INSUFFICIENT_EVIDENCE"
 
 
-def test_invalid_claims_are_dropped_and_reported(admin, home_loan):
+def test_invalid_claims_are_dropped_and_reported(asker, home_loan):
     _use(ScriptedLLM([
         {"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]},
         {"text": "The LTV for NRI customers is 90%.", "evidence_ids": ["E1"]},
         {"text": "Processing fees are waived for all loans.", "evidence_ids": ["E42"]},
     ]))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "answered"
     model_claims = [c["text"] for c in answer["claims"] if "said instead" not in c["text"]]
     assert model_claims == ["For loans above Rs. 75 lakh the LTV shall not exceed 70%."]
@@ -261,13 +267,13 @@ def test_invalid_claims_are_dropped_and_reported(admin, home_loan):
     assert not any(w.startswith("Removed") for w in answer["warnings"])
 
 
-def test_a_rule_that_changed_since_the_previous_version_shows_both(admin, home_loan):
+def test_a_rule_that_changed_since_the_previous_version_shows_both(asker, home_loan):
     # The version in force caps the LTV at 70%; the one before it said 75%. A question about the
     # current rule is answered from the version in force and also shows, cited, what changed.
     _use(ScriptedLLM([
         {"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]},
     ]))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "answered"
     current, earlier = answer["claims"]
     assert "70%" in current["text"]
@@ -277,13 +283,13 @@ def test_a_rule_that_changed_since_the_previous_version_shows_both(admin, home_l
     assert any("earlier version" in w for w in answer["warnings"])
 
 
-def test_llm_outage_degrades_to_no_answer(admin, home_loan):
+def test_llm_outage_degrades_to_no_answer(asker, home_loan):
     _use(ScriptedLLM(fail=True))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["no_answer"]["reason"] == "LLM_UNAVAILABLE"
 
 
-def test_amending_circular_is_surfaced_as_a_conflict(client, app, tenant, admin, home_loan):
+def test_amending_circular_is_surfaced_as_a_conflict(client, app, tenant, admin, asker, home_loan):
     circular = PolicySpec(
         title="CIRCULAR: REVISION OF LTV NORMS",
         header_lines=["Circular No: CRD/2026/45", "Effective Date: 01/08/2026"],
@@ -300,7 +306,7 @@ def test_amending_circular_is_surfaced_as_a_conflict(client, app, tenant, admin,
     }, relationships=[{"relation_type": "AMENDS", "target_policy_id": target["policy_id"], "clauses": ["5.2"]}])
     drain(app)
 
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "answered", answer
     kinds = {c["type"] for c in answer["conflicts"]}
     assert "AMENDED" in kinds
@@ -309,16 +315,16 @@ def test_amending_circular_is_surfaced_as_a_conflict(client, app, tenant, admin,
     assert answer["warnings"][0].startswith("Your sources disagree")
 
 
-def test_answers_are_cached_per_scope(client, tenant, admin, home_loan):
-    first = ask(admin, "What is the interest rate spread?")
+def test_answers_are_cached_per_scope(client, tenant, asker, home_loan):
+    first = ask(asker, "What is the interest rate spread?")
     assert first["cache_hit"] is False
-    assert ask(admin, "what is the  interest rate SPREAD?")["cache_hit"] is True
+    assert ask(asker, "what is the  interest rate SPREAD?")["cache_hit"] is True
     assert ask(login(client, tenant.user_a1), "What is the interest rate spread?")["cache_hit"] is False
 
 
-def test_query_history_is_personal(client, tenant, admin, home_loan):
-    ask(admin, "What is the interest rate spread?")
-    assert admin.get("/ai/queries").json()["data"]["total"] == 1
+def test_query_history_is_personal(client, tenant, asker, home_loan):
+    ask(asker, "What is the interest rate spread?")
+    assert asker.get("/ai/queries").json()["data"]["total"] == 1
     assert login(client, tenant.user_a1).get("/ai/queries").json()["data"]["total"] == 0
 
 
@@ -353,8 +359,8 @@ class StreamingScriptedLLM(ScriptedLLM):
         yield result
 
 
-def test_stream_emits_progress_validated_claims_then_the_same_answer_as_ask(admin, home_loan):
-    events = stream(admin, "What is the current LTV for home loans above 75 lakh?")
+def test_stream_emits_progress_validated_claims_then_the_same_answer_as_ask(asker, home_loan):
+    events = stream(asker, "What is the current LTV for home loans above 75 lakh?")
     kinds = [kind for kind, _ in events]
     assert kinds[0] == "stage" and kinds[-1] == "done" and "error" not in kinds
     done = events[-1][1]
@@ -365,25 +371,25 @@ def test_stream_emits_progress_validated_claims_then_the_same_answer_as_ask(admi
     shown_sources = [s for c in streamed for s in c["sources"]]
     assert [(s["number"], s["chunk_id"]) for s in shown_sources] == [(s["number"], s["chunk_id"]) for s in done["sources"]]
     # And it is the same answer the non-streaming endpoint returns (served from the shared cache).
-    again = ask(admin, "What is the current LTV for home loans above 75 lakh?")
+    again = ask(asker, "What is the current LTV for home loans above 75 lakh?")
     assert again["claims"] == done["claims"] and again["cache_hit"] is True
 
 
-def test_stream_never_shows_a_claim_that_fails_validation(admin, home_loan):
+def test_stream_never_shows_a_claim_that_fails_validation(asker, home_loan):
     _use(StreamingScriptedLLM([
         {"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]},
         {"text": "The LTV for NRI customers is 90%.", "evidence_ids": ["E1"]},
         {"text": "Processing fees are waived for all loans.", "evidence_ids": ["E42"]},
     ]))
-    events = stream(admin, "What is the LTV for loans above 75 lakh?")
+    events = stream(asker, "What is the LTV for loans above 75 lakh?")
     streamed = [data["text"] for kind, data in events if kind == "claim"]
     assert streamed == ["For loans above Rs. 75 lakh the LTV shall not exceed 70%."]
     assert events[-1][0] == "done" and len([c for c in events[-1][1]["plan"]["checks"] if c.startswith("Removed")]) == 2
 
 
-def test_stream_reports_no_answer_through_done(admin, home_loan):
+def test_stream_reports_no_answer_through_done(asker, home_loan):
     _use(StreamingScriptedLLM(fail=True))
-    events = stream(admin, "What is the LTV for loans above 75 lakh?")
+    events = stream(asker, "What is the LTV for loans above 75 lakh?")
     assert [kind for kind, _ in events if kind == "claim"] == []
     assert events[-1][0] == "done" and events[-1][1]["no_answer"]["reason"] == "LLM_UNAVAILABLE"
 
@@ -395,18 +401,18 @@ def test_stream_requires_authentication(client, home_loan):
 
 
 @pytest.mark.parametrize("question", ["😂😂😂😂😂", "???", "🙏 !!"])
-def test_a_question_without_words_is_refused_not_answered(db, admin, home_loan, question):
-    result = ask(admin, question)
+def test_a_question_without_words_is_refused_not_answered(db, asker, home_loan, question):
+    result = ask(asker, question)
     assert result["status"] == "no_answer" and result["sources"] == []
     assert result["no_answer"]["reason"] == "NOT_A_QUESTION"
 
 
-def test_stream_never_shows_claims_that_do_not_answer_the_question(admin, home_loan):
+def test_stream_never_shows_claims_that_do_not_answer_the_question(asker, home_loan):
     # True to the evidence, but about something else: never shown, then withdrawn.
     _use(StreamingScriptedLLM([
         {"text": "The interest rate is linked to the repo rate.", "evidence_ids": ["E1"]},
     ]))
-    events = stream(admin, "What is the LTV for loans above 75 lakh?")
+    events = stream(asker, "What is the LTV for loans above 75 lakh?")
     assert [kind for kind, _ in events if kind == "claim"] == []
     assert events[-1][1]["status"] == "no_answer"
 
@@ -417,10 +423,10 @@ def test_stream_never_shows_claims_that_do_not_answer_the_question(admin, home_l
     ("thanks", "GREETING"),
     ("Can you please explain it to me in short?", "NO_SUBJECT"),
 ])
-def test_greetings_and_questions_without_a_subject_are_never_answered_from_documents(admin, home_loan, question, reason):
+def test_greetings_and_questions_without_a_subject_are_never_answered_from_documents(asker, home_loan, question, reason):
     scripted = ScriptedLLM([{"text": "For loans above Rs. 75 lakh the LTV shall not exceed 70%.", "evidence_ids": ["E1"]}])
     _use(scripted)
-    answer = ask(admin, question)
+    answer = ask(asker, question)
     assert answer["status"] == "no_answer" and answer["no_answer"]["reason"] == reason
     assert answer["sources"] == [] and answer["claims"] == []
     from app.modules.rag.prompts import SYSTEM_PROMPT
@@ -428,13 +434,13 @@ def test_greetings_and_questions_without_a_subject_are_never_answered_from_docum
     assert answer["no_answer"]["suggestions"] == []
 
 
-def test_several_questions_in_one_message_are_all_answered(admin, home_loan, monkeypatch):
+def test_several_questions_in_one_message_are_all_answered(asker, home_loan, monkeypatch):
     from app.modules.rag import service as rag_service
 
     questions = ["What is the LTV for loans above 75 lakh?", "What is the interest rate spread?",
                  "What is the LTV for loans above 75 lakh in the home loan policy?", "What is the spread on the repo rate?"]
     monkeypatch.setattr(rag_service, "restated_questions", lambda llm, q, history=None: questions)
-    answer = ask(admin, "\n".join(questions))
+    answer = ask(asker, "\n".join(questions))
     assert answer["status"] == "answered"
     assert answer["plan"]["parts"] == questions
 
@@ -451,8 +457,8 @@ def test_a_check_on_the_same_question_is_not_a_second_question():
     "What is the LTV for loans above 75 lakh in version 3 and version 4?",
     "Has the LTV for loans above 75 lakh changed between the versions?",
 ])
-def test_comparing_a_rule_answers_from_each_version(admin, home_loan, question):
-    answer = ask(admin, question)
+def test_comparing_a_rule_answers_from_each_version(asker, home_loan, question):
+    answer = ask(asker, question)
     assert answer["status"] == "answered", answer
     assert answer["plan"]["query_class"] == "comparison"
     assert {s["version_label"] for s in answer["sources"]} == {"3", "4"}
@@ -461,8 +467,8 @@ def test_comparing_a_rule_answers_from_each_version(admin, home_loan, question):
 
 
 @pytest.mark.parametrize("question", ["What changed in v4?", "What changed in version 3.0?"])
-def test_what_changed_in_one_version_compares_it_with_its_neighbour(admin, home_loan, question):
-    answer = ask(admin, question)
+def test_what_changed_in_one_version_compares_it_with_its_neighbour(asker, home_loan, question):
+    answer = ask(asker, question)
     assert answer["status"] == "answered", answer
     assert any(s["kind"] == "comparison" and s["version_label"] == "3 → 4" for s in answer["sources"])
 
@@ -480,9 +486,9 @@ class _TimedOut(ScriptedLLM):
         return result
 
 
-def test_a_timed_out_model_is_reported_as_such_not_as_not_found(admin, home_loan):
+def test_a_timed_out_model_is_reported_as_such_not_as_not_found(asker, home_loan):
     _use(_TimedOut([]))
-    answer = ask(admin, "What is the LTV for loans above 75 lakh?")
+    answer = ask(asker, "What is the LTV for loans above 75 lakh?")
     assert answer["status"] == "no_answer"
     assert answer["no_answer"]["reason"] == "LLM_UNAVAILABLE"
     assert answer["no_answer"]["suggestions"] == []  # no "name the policy" advice for an outage
