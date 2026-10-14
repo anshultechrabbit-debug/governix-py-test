@@ -10,6 +10,7 @@ import { DocumentsPage } from "./pages/DocumentsPage";
 import { DocumentViewerPage } from "./pages/DocumentViewerPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { NginxPage } from "./pages/NginxPage";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { ComparePage } from "./pages/ComparePage";
@@ -80,6 +81,7 @@ export function App() {
           <Route path="users" element={<Guard permission="users:manage">{me.role === "master_admin" ? <PlatformUsersPage /> : <UsersPage />}</Guard>} />
           <Route path="branches" element={<Guard permission="branches:manage"><BranchesPage /></Guard>} />
           <Route path="organizations" element={<Guard permission="organizations:manage"><OrganizationsPage /></Guard>} />
+          <Route path="organizations/:id/nginx" element={<Guard permission="organizations:manage"><NginxPage /></Guard>} />
 
           {/* Account */}
           <Route path="notifications" element={<NotificationsPage />} />

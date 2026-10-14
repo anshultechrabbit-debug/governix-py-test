@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Landmark, Pencil, Plus } from "lucide-react";
+import { Building2, Landmark, Pencil, Plus, Server } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router";
 import { api, ApiError, qs } from "../api/client";
-import type { Organization, OrganizationOptions, Page } from "../api/types";
+import type { NginxOverview, Organization, OrganizationOptions, Page } from "../api/types";
 import {
   firstFreePort, newOrgForm, OrganizationFields, orgBody, orgFormOf, orgFormReady, OrgLogo, uploadLogo, type OrgForm,
 } from "../components/OrganizationForm";
+import { NginxBadge } from "../components/NginxBadge";
 import {
   Button, Card, EmptyState, ErrorState, Field, Input, Modal, PageHeader, PasswordInput, SkeletonRows, StatusBadge, Table,
 } from "../components/ui";
@@ -31,6 +33,12 @@ export function OrganizationsPage() {
     queryKey: ["organizations"],
     queryFn: () => api.get<Page<Organization>>(`/organizations${qs({ limit: 100 })}`),
   });
+  // Each organization's port is served by an nginx server block, deployed from its Nginx page.
+  const { data: nginx } = useQuery({
+    queryKey: ["nginx"],
+    queryFn: () => api.get<NginxOverview>("/nginx"),
+  });
+  const nginxSites = new Map(nginx?.sites.map((site) => [site.organization_id, site]));
 
   const toggleStatus = async (org: Organization) => {
     const nextStatus = org.status === "active" ? "suspended" : "active";
@@ -60,7 +68,7 @@ export function OrganizationsPage() {
               description="Create your first organization with its admin to onboard a bank."
               action={<Button onClick={() => setCreating(true)}><Plus className="size-4" />Add organization</Button>} />
           ) : (
-            <Table head={["Organization", "Port", "Branding", "Contact", "Status", "Created", ""]}>
+            <Table head={["Organization", "Port", "Nginx", "Branding", "Contact", "Status", "Created", ""]}>
               {data.items.map((org) => (
                 <tr key={org.id}>
                   <td className="px-4 py-3">
@@ -70,6 +78,9 @@ export function OrganizationsPage() {
                     </div>
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-ink-soft">{org.allowed_port ?? "—"}</td>
+                  <td className="px-4 py-3">
+                    {nginxSites.get(org.id) ? <NginxBadge state={nginxSites.get(org.id)!.state} /> : <span className="text-muted">—</span>}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-1.5">
                       {[org.primary_color, org.secondary_color].map((c, i) => c
@@ -84,6 +95,10 @@ export function OrganizationsPage() {
                   <td className="px-4 py-3">
                     <div className="flex justify-end gap-1">
                       <Button variant="ghost" size="sm" onClick={() => setEditing(org)}><Pencil className="size-3.5" />Edit</Button>
+                      <Link to={`/organizations/${org.id}/nginx`}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium text-ink-soft hover:bg-subtle">
+                        <Server className="size-3.5" />Nginx
+                      </Link>
                       <Button variant="ghost" size="sm" onClick={() => toggleStatus(org)}>{org.status === "active" ? "Suspend" : "Activate"}</Button>
                     </div>
                   </td>
@@ -142,6 +157,7 @@ function CreateOrganizationModal({ open, onClose }: { open: boolean; onClose: ()
       else toast("ok", `Organization "${created.name}" created on port ${created.allowed_port}${adminGiven ? ` with admin ${admin.email}` : ""}.`);
       void queryClient.invalidateQueries({ queryKey: ["organizations"] });
       void queryClient.invalidateQueries({ queryKey: ["organization-options"] });
+      void queryClient.invalidateQueries({ queryKey: ["nginx"] });
       onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to create the organization.");
@@ -207,6 +223,7 @@ function EditOrganizationModal({ org, onClose }: { org: Organization | null; onC
       void queryClient.invalidateQueries({ queryKey: ["organizations"] });
       void queryClient.invalidateQueries({ queryKey: ["organization-options"] });
       void queryClient.invalidateQueries({ queryKey: ["my-organization"] });
+      void queryClient.invalidateQueries({ queryKey: ["nginx"] }); // a new port leaves the deployed file out of date
       onClose();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Could not save.");

@@ -3,13 +3,14 @@ import {
   Building2, Check, ChevronLeft, ChevronRight, Copy, KeyRound, Mail, Pencil, Plus, Shield, Trash2, UserPlus,
   Users as UsersIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type { Organization, Page, User, UserCreated, UserStats } from "../api/types";
 import {
   Badge, Button, Card, EmptyState, ErrorState, Field, Input, Modal, PageHeader, Select, SkeletonRows, Stat, StatusBadge,
   Table,
 } from "../components/ui";
+import { copyText } from "../lib/clipboard";
 import { cn, formatDate } from "../lib/format";
 import { useToast } from "../store/hooks";
 
@@ -531,23 +532,13 @@ function ResetPasswordModal({ user, onClose, onReset }: {
   );
 }
 
-/** Shows a generated password once. The live site is plain HTTP, where the Clipboard API is missing. */
+/** Shows a generated password once. */
 function CredentialsModal({ credentials, onClose }: { credentials: Credentials | null; onClose: () => void }) {
-  const input = useRef<HTMLInputElement>(null);
   const [copied, setCopied] = useState(false);
   useEffect(() => setCopied(false), [credentials]);
 
   async function copy() {
-    if (!credentials) return;
-    try {
-      await navigator.clipboard.writeText(credentials.password);
-      setCopied(true);
-      return;
-    } catch {
-      // No Clipboard API outside HTTPS and localhost: copy from the selected field instead.
-    }
-    input.current?.select();
-    setCopied(document.execCommand("copy"));
+    if (credentials) setCopied(await copyText(credentials.password));
   }
 
   return (
@@ -560,7 +551,7 @@ function CredentialsModal({ credentials, onClose }: { credentials: Credentials |
         </Field>
         <Field label="Temporary password" hint="Share it securely. They can change it after signing in.">
           <div className="flex gap-2">
-            <Input ref={input} readOnly value={credentials?.password ?? ""} className="font-mono" onFocus={(e) => e.target.select()} />
+            <Input readOnly value={credentials?.password ?? ""} className="font-mono" onFocus={(e) => e.target.select()} />
             <Button variant="secondary" onClick={copy} aria-label="Copy password">
               {copied ? <Check className="size-4" /> : <Copy className="size-4" />}{copied ? "Copied" : "Copy"}
             </Button>

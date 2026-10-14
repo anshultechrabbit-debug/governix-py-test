@@ -1,3 +1,4 @@
+import re
 import secrets
 import warnings
 from datetime import date
@@ -132,6 +133,20 @@ class Settings(BaseSettings):
     TENANT_PORT_MIN: int = 7001
     TENANT_PORT_MAX: int = 7100
 
+    # nginx (Organizations → Nginx): each organization's port gets a server block that serves the
+    # built frontend and forwards /api to this backend. NGINX_CONF_DIR is a folder nginx includes
+    # (`include /etc/nginx/governix-tenants/*.conf;`) and this app can write; unset, the config can
+    # only be previewed and copied by hand. See deploy/README.md.
+    NGINX_CONF_DIR: Path | None = None
+    NGINX_FRONTEND_ROOT: str = "/var/www/governix/frontend/dist"
+    NGINX_API_UPSTREAM: str = "http://127.0.0.1:8000"
+    # Organizations are told apart by port, so one name (or "_", any) serves them all.
+    NGINX_SERVER_NAME: str = "_"
+    # Run without a shell. Where the app is not root: "sudo -n /usr/sbin/nginx -t" and
+    # "sudo -n /usr/sbin/nginx -s reload", with a sudoers rule for exactly these two.
+    NGINX_TEST_COMMAND: str = "nginx -t"
+    NGINX_RELOAD_COMMAND: str = "nginx -s reload"
+
     # AI providers. "openai" is the configured default; "local" providers are
     # deterministic stand-ins for development/tests without an API key; "ollama"
     # is a model running on this machine behind an OpenAI-compatible API (Ollama,
@@ -256,6 +271,28 @@ class Settings(BaseSettings):
     OPENAI_ADMIN_KEY: SecretStr | None = None
     # Price overrides, USD per 1M tokens: {"gpt-4o-mini": [0.15, 0.60]} (input, output).
     OPENAI_PRICES: dict[str, list[float]] = {}
+
+    # Written into nginx config: nothing that could end a directive (";", "{", "}", newlines).
+    @field_validator("NGINX_FRONTEND_ROOT")
+    @classmethod
+    def nginx_root_is_a_path(cls, value: str) -> str:
+        if not re.fullmatch(r"/[A-Za-z0-9._/-]*", value):
+            raise ValueError("NGINX_FRONTEND_ROOT must be an absolute path of letters, digits, '.', '_', '-' and '/'.")
+        return value.rstrip("/") or "/"
+
+    @field_validator("NGINX_API_UPSTREAM")
+    @classmethod
+    def nginx_upstream_is_a_url(cls, value: str) -> str:
+        if not re.fullmatch(r"https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?/?", value):
+            raise ValueError("NGINX_API_UPSTREAM must be a URL such as http://127.0.0.1:8000.")
+        return value.rstrip("/")
+
+    @field_validator("NGINX_SERVER_NAME")
+    @classmethod
+    def nginx_server_name_is_hostnames(cls, value: str) -> str:
+        if not re.fullmatch(r"_|[A-Za-z0-9*.-]+( [A-Za-z0-9*.-]+)*", value.strip()):
+            raise ValueError("NGINX_SERVER_NAME must be '_' or host names separated by spaces.")
+        return value.strip()
 
     @field_validator("DATABASE_URL")
     @classmethod

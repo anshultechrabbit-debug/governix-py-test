@@ -26,6 +26,7 @@ from app.modules.departments.router import router as departments_router
 from app.modules.documents.router import router as documents_router
 from app.modules.health.router import router as health_router
 from app.modules.ingestion.router import router as ingestion_router
+from app.modules.nginx.router import router as nginx_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.organizations.router import router as organizations_router
 from app.modules.policies.router import router as policies_router
@@ -154,6 +155,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         health_router,
         auth_router,
         organizations_router,
+        nginx_router,
         branches_router,
         departments_router,
         users_router,

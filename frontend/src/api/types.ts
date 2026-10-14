@@ -390,6 +390,13 @@ export interface Organization {
   contact_phone: string | null; website: string | null; address: string | null; has_logo: boolean;
   brand_font: string | null; allowed_port: number | null;
 }
+/** An organization's nginx server block (GET /nginx). `unavailable`: NGINX_CONF_DIR is not set on the server. */
+export type NginxState = "deployed" | "outdated" | "disabled" | "not_deployed" | "unavailable";
+export interface NginxSite {
+  organization_id: UUID; port: number | null; state: NginxState; config_file: string | null; deployed_at: string | null;
+}
+export interface NginxDetail extends NginxSite { configured: boolean; server_name: string; config: string | null }
+export interface NginxOverview { configured: boolean; sites: NginxSite[] }
 /** What the organization forms offer (GET /organizations/options). */
 export interface OrganizationOptions {
   port_min: number; port_max: number; fonts: string[];
