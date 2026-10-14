@@ -38,5 +38,6 @@ class Me(BaseModel):
     organization_id: uuid.UUID | None
     organization_name: str | None
     branch_id: uuid.UUID | None
+    branch_name: str | None = None
     department_id: uuid.UUID | None
     permissions: list[str]

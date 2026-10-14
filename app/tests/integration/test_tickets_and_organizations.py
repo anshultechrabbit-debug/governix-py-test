@@ -159,3 +159,36 @@ def test_branch_manager_creates_users_without_a_department(client, tenant):
     assert response.status_code == 201, response.text
     user = response.json()["data"]
     assert user["branch_id"] == str(tenant.branch_a.id) and user["department_id"] is None
+
+
+def test_complaint_about_an_assigned_policy_flows_to_resolution(client, db, tenant):
+    from app.tests.factories import assign, category
+
+    admin = login(client, tenant.admin)
+    cid = str(category(db, tenant.org).id)
+    vault = admin.post("/policies", json={"name": "Vault Cash Handling SOP", "category_id": cid, "scope": "global"})
+    other = admin.post("/policies", json={"name": "Treasury Dealing Limits", "category_id": cid, "scope": "global"})
+    assert vault.status_code == other.status_code == 201
+    assign(db, tenant.user_a1, vault.json()["data"]["id"])
+
+    user = login(client, tenant.user_a1)
+    # Only a policy the User can read: not one that exists but is not assigned to them.
+    refused = user.post("/tickets", json={"kind": "complaint", "subject": "Limits question",
+                                          "description": "Which desk limit applies?", "policy_id": other.json()["data"]["id"]})
+    assert refused.json()["error"]["reason"] == "POLICY_NOT_FOUND"
+    ticket = raise_ticket(user, kind="complaint", policy_id=vault.json()["data"]["id"])
+    assert ticket["policy_name"] == "Vault Cash Handling SOP" and ticket["last_reply_body"] is None
+
+    manager = login(client, tenant.manager_a)
+    assert manager.get("/tickets/stats?box=queue&kind=complaint").json()["data"]["open"] == 1
+    found = manager.get("/tickets?box=queue&kind=complaint&search=vault").json()["data"]["items"]
+    assert [t["id"] for t in found] == [ticket["id"]]
+    manager.post(f"/tickets/{ticket['id']}/status", json={"status": "resolved", "note": "Two officers must sign."})
+    mine = user.get("/tickets?box=mine&kind=complaint").json()["data"]["items"][0]
+    assert mine["status"] == "resolved" and mine["last_reply_body"] == "Two officers must sign."
+    assert user.get("/tickets/stats?box=mine&kind=complaint").json()["data"]["resolved"] == 1
+
+
+def test_me_names_the_branch(client, tenant):
+    me = login(client, tenant.user_a1).get("/auth/me").json()["data"]
+    assert me["branch_name"] == tenant.branch_a.name

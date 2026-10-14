@@ -62,11 +62,18 @@ export function TicketPage() {
 
   return (
     <>
-      <nav className="mb-3 text-sm text-muted"><Link to="/support" className="flex items-center gap-1 hover:text-ink"><ArrowLeft className="size-4" />Support</Link></nav>
+      <nav className="mb-3 text-sm text-muted">
+        <Link to={ticket.kind === "complaint" ? "/complaints" : "/support"} className="flex items-center gap-1 hover:text-ink">
+          <ArrowLeft className="size-4" />{ticket.kind === "complaint" ? "Complaints" : "Support"}
+        </Link>
+      </nav>
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="break-words text-lg font-semibold tracking-tight sm:text-xl">{ticket.subject}</h1>
-          <p className="mt-1 text-sm text-muted">{ticket.kind === "complaint" ? "Complaint" : "Support request"}{ticket.category ? ` · ${ticket.category}` : ""} · raised {formatDateTime(ticket.created_at)} by {ticket.created_by_name ?? "—"}</p>
+          <p className="mt-1 text-sm text-muted">{ticket.kind === "complaint" ? "Complaint" : "Support request"}
+            {ticket.policy_id && ticket.policy_name
+              ? <> · <Link to={`/policies/${ticket.policy_id}`} className="text-brand-700 hover:underline">{ticket.policy_name}</Link></>
+              : ticket.category ? ` · ${ticket.category}` : ""} · raised {formatDateTime(ticket.created_at)} by {ticket.created_by_name ?? "—"}</p>
         </div>
         <div className="flex flex-wrap gap-2"><Badge tone={PRIORITY_TONE[ticket.priority]}>{humanize(ticket.priority)} priority</Badge><Badge tone={tone}>{label}</Badge></div>
       </div>

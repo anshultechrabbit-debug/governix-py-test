@@ -24,6 +24,8 @@ from app.modules.audit.service import record_event
 from app.modules.auth.permissions import Principal, Role
 from app.modules.notifications.model import NotificationType
 from app.modules.notifications.service import notify
+from app.modules.policies.model import Policy
+from app.modules.policies.repository import PolicyRepository
 from app.modules.tickets.model import (
     Ticket,
     TicketAttachment,
@@ -57,12 +59,23 @@ CREATOR_TRANSITIONS = {
 
 
 @dataclass
+class LastReply:
+    """The latest message with words from someone other than the creator: the handler's answer."""
+
+    body: str
+    author_name: str | None
+    at: datetime
+
+
+@dataclass
 class TicketView:
     ticket: Ticket
     created_by_name: str | None
     assigned_to_name: str | None
     message_count: int
     can_handle: bool
+    policy_name: str | None = None
+    last_reply: LastReply | None = None
 
 
 def is_handler(principal: Principal, ticket: Ticket) -> bool:
@@ -108,18 +121,21 @@ class TicketService:
     # --- create ---------------------------------------------------------------------
 
     def create(self, principal: Principal, *, kind: TicketKind, subject: str, description: str,
-               priority: str, category: str | None) -> Ticket:
+               priority: str, category: str | None, policy_id: uuid.UUID | None = None) -> Ticket:
         level = LEVEL_FOR_ROLE.get(principal.role)
         if level is None or principal.organization_id is None:
             raise PermissionDeniedError("Your role does not raise tickets.")
         if kind == TicketKind.COMPLAINT and principal.role is not Role.DEPARTMENT_USER:
             raise ValidationError("Complaints are raised by users to their branch manager; raise a support ticket instead.")
+        # Only a policy the creator can read (a User: one assigned to them), so a ticket never names another.
+        if policy_id is not None and PolicyRepository(self.session).get_visible(principal, policy_id) is None:
+            raise ValidationError("Choose one of the policies you can read.", code="POLICY_NOT_FOUND")
         ticket = Ticket(
             organization_id=principal.organization_id,
             branch_id=principal.branch_id if level != TicketLevel.PLATFORM else None,
             kind=kind, level=level, category=(category or "").strip() or None,
             subject=subject.strip(), description=description.strip(), priority=priority,
-            status=TicketStatus.OPEN, created_by_id=principal.user_id,
+            status=TicketStatus.OPEN, created_by_id=principal.user_id, policy_id=policy_id,
         )
         self.session.add(ticket)
         self.session.flush()
@@ -143,22 +159,43 @@ class TicketService:
             raise NotFoundError("Ticket not found.")
         return ticket
 
-    def find(self, principal: Principal, *, box: str, status: str | None, kind: str | None,
-             limit: int, offset: int) -> tuple[list[TicketView], int]:
-        query = select(Ticket).where(_visible(principal))
+    @staticmethod
+    def _in_box(principal: Principal, query, box: str, kind: str | None):
+        query = query.where(_visible(principal))
         if box == "mine":
             query = query.where(Ticket.created_by_id == principal.user_id)
         elif box == "queue":
             query = query.where(Ticket.created_by_id != principal.user_id)
+        if kind:
+            query = query.where(Ticket.kind == kind)
+        return query
+
+    def find(self, principal: Principal, *, box: str, status: str | None, kind: str | None,
+             limit: int, offset: int, search: str | None = None) -> tuple[list[TicketView], int]:
+        query = self._in_box(principal, select(Ticket), box, kind)
+        if search and search.strip():
+            term = f"%{search.strip().lower()}%"
+            creator, policy = aliased(User), aliased(Policy)
+            query = (
+                query.outerjoin(creator, creator.id == Ticket.created_by_id)
+                .outerjoin(policy, policy.id == Ticket.policy_id)
+                .where(or_(*(func.lower(column).like(term) for column in (
+                    Ticket.subject, Ticket.description, Ticket.category, creator.full_name, policy.name,
+                ))))
+            )
         if status == "active":
             query = query.where(Ticket.status.not_in([TicketStatus.RESOLVED, TicketStatus.CLOSED]))
         elif status:
             query = query.where(Ticket.status == status)
-        if kind:
-            query = query.where(Ticket.kind == kind)
         total = self.session.scalar(select(func.count()).select_from(query.subquery())) or 0
         tickets = self.session.scalars(query.order_by(Ticket.updated_at.desc()).limit(limit).offset(offset)).all()
         return self.views(principal, list(tickets)), total
+
+    def stats(self, principal: Principal, *, box: str, kind: str | None) -> dict[str, int]:
+        """How many tickets of the box are in each status."""
+        query = self._in_box(principal, select(Ticket.status, func.count()), box, kind).group_by(Ticket.status)
+        counts = dict(self.session.execute(query).all())
+        return {status.value: counts.get(status.value, 0) for status in TicketStatus}
 
     def views(self, principal: Principal, tickets: list[Ticket]) -> list[TicketView]:
         if not tickets:
@@ -169,10 +206,33 @@ class TicketService:
             select(TicketMessage.ticket_id, func.count()).where(TicketMessage.ticket_id.in_([t.id for t in tickets]))
             .group_by(TicketMessage.ticket_id)
         ).all())
+        policies = dict(self.session.execute(
+            select(Policy.id, Policy.name).where(Policy.id.in_({t.policy_id for t in tickets} - {None}))
+        ).all())
+        replies = self._last_replies(tickets)
         return [
-            TicketView(t, names.get(t.created_by_id), names.get(t.assigned_to_id), counts.get(t.id, 0), is_handler(principal, t))
+            TicketView(t, names.get(t.created_by_id), names.get(t.assigned_to_id), counts.get(t.id, 0),
+                       is_handler(principal, t), policies.get(t.policy_id), replies.get(t.id))
             for t in tickets
         ]
+
+    def _last_replies(self, tickets: list[Ticket]) -> dict[uuid.UUID, LastReply]:
+        """Each ticket's latest message with words from someone other than its creator (a resolve note counts)."""
+        author = aliased(User)
+        ranked = (
+            select(TicketMessage.ticket_id, TicketMessage.body, TicketMessage.created_at, author.full_name.label("name"),
+                   func.row_number().over(partition_by=TicketMessage.ticket_id,
+                                          order_by=TicketMessage.created_at.desc()).label("n"))
+            .join(Ticket, Ticket.id == TicketMessage.ticket_id)
+            .outerjoin(author, author.id == TicketMessage.author_id)
+            .where(TicketMessage.ticket_id.in_([t.id for t in tickets]), TicketMessage.body.is_not(None),
+                   or_(TicketMessage.author_id.is_(None), TicketMessage.author_id != Ticket.created_by_id))
+            .subquery()
+        )
+        rows = self.session.execute(
+            select(ranked.c.ticket_id, ranked.c.body, ranked.c.name, ranked.c.created_at).where(ranked.c.n == 1)
+        ).all()
+        return {ticket_id: LastReply(body, name, at) for ticket_id, body, name, at in rows}
 
     def thread(self, principal: Principal, ticket_id: uuid.UUID) -> tuple[TicketView, list, list[TicketAttachment]]:
         ticket = self.get(principal, ticket_id)

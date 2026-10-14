@@ -15,6 +15,7 @@ export interface Me {
   organization_id: UUID | null;
   organization_name: string | null;
   branch_id: UUID | null;
+  branch_name: string | null;
   department_id: UUID | null;
   permissions: string[];
 }
@@ -615,6 +616,9 @@ export interface Ticket {
   kind: "complaint" | "support";
   level: "branch" | "organization" | "platform";
   category: string | null;
+  /** A complaint's related policy (one the creator can read); null for a general question. */
+  policy_id: UUID | null;
+  policy_name: string | null;
   subject: string;
   description: string;
   priority: "low" | "medium" | "high" | "urgent";
@@ -625,11 +629,17 @@ export interface Ticket {
   assigned_to_name: string | null;
   message_count: number;
   can_handle: boolean;
+  /** The handler's latest words: a reply or a resolve note. */
+  last_reply_body: string | null;
+  last_reply_by: string | null;
+  last_reply_at: string | null;
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
   closed_at: string | null;
 }
+/** GET /tickets/stats: tickets of the box in each status. */
+export type TicketStats = Record<TicketStatus, number>;
 
 export interface TicketMessage {
   id: UUID;

@@ -16,6 +16,7 @@ import { NginxPage } from "./pages/NginxPage";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { ComparePage } from "./pages/ComparePage";
+import { ComplaintsPage } from "./pages/ComplaintsPage";
 import { PoliciesPage } from "./pages/PoliciesPage";
 import { PolicyDetailPage } from "./pages/PolicyDetailPage";
 import { SupportPage } from "./pages/SupportPage";
@@ -87,6 +88,7 @@ export function App() {
 
           {/* Account */}
           <Route path="notifications" element={<NotificationsPage />} />
+          <Route path="complaints" element={<Guard permission="support"><ComplaintsPage /></Guard>} />
           <Route path="support" element={<Guard permission="support"><SupportPage /></Guard>} />
           <Route path="support/:id" element={<Guard permission="support"><TicketPage /></Guard>} />
 

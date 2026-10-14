@@ -20,7 +20,6 @@ export const TICKET_STATUS: Record<Ticket["status"], [string, "info" | "warn" | 
 export const PRIORITY_TONE: Record<Ticket["priority"], "neutral" | "info" | "warn" | "bad"> = {
   low: "neutral", medium: "info", high: "warn", urgent: "bad",
 };
-const COMPLAINT_CATEGORIES = ["Branch service", "Staff behaviour", "Policy question", "Technical problem", "Other"];
 
 /** Who handles what the caller raises (spec §45-46). */
 function destination(role: string | undefined) {
@@ -106,8 +105,6 @@ function NewTicketModal({ open, onClose }: { open: boolean; onClose: () => void 
   const { me } = useAuth();
   const navigate = useNavigate();
   const isUser = me?.role === "department_user";
-  const [kind, setKind] = useState<"complaint" | "support">(isUser ? "complaint" : "support");
-  const [category, setCategory] = useState("");
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState("medium");
@@ -115,8 +112,8 @@ function NewTicketModal({ open, onClose }: { open: boolean; onClose: () => void 
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
-    setKind(isUser ? "complaint" : "support"); setCategory(""); setSubject(""); setDescription(""); setPriority("medium"); setError(null);
-  }, [open, isUser]);
+    setSubject(""); setDescription(""); setPriority("medium"); setError(null);
+  }, [open]);
   const invalid = subject.trim().length < 3 || description.trim().length < 5;
 
   async function submit(event: FormEvent) {
@@ -125,7 +122,7 @@ function NewTicketModal({ open, onClose }: { open: boolean; onClose: () => void 
     setBusy(true);
     try {
       const ticket = await api.post<TicketDetail>("/tickets", {
-        kind, category: category || null, subject: subject.trim(), description: description.trim(), priority,
+        kind: "support", subject: subject.trim(), description: description.trim(), priority,
       });
       onClose();
       navigate(`/support/${ticket.id}`);
@@ -143,20 +140,9 @@ function NewTicketModal({ open, onClose }: { open: boolean; onClose: () => void 
       <form id="new-ticket" onSubmit={submit} className="space-y-4">
         <p className="rounded-md bg-subtle px-3 py-2 text-sm text-ink-soft">This goes to <span className="font-medium text-ink">{destination(me?.role)}</span>. You are notified of every response.</p>
         {isUser && (
-          <Field label="Type">
-            <Select value={kind} onChange={(e) => setKind(e.target.value as "complaint" | "support")}>
-              <option value="complaint">Complaint</option>
-              <option value="support">Support request</option>
-            </Select>
-          </Field>
-        )}
-        {kind === "complaint" && (
-          <Field label="Category">
-            <Select value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="">Choose a category…</option>
-              {COMPLAINT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-            </Select>
-          </Field>
+          <p className="text-xs text-muted">
+            A question or complaint about a policy? Use <Link to="/complaints" onClick={onClose} className="text-brand-700 hover:underline">Complaints</Link>.
+          </p>
         )}
         <Field label="Subject *"><Input value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={300} placeholder="Short summary" /></Field>
         <Field label="Description *"><Textarea rows={5} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What happened, and what would you like done?" /></Field>

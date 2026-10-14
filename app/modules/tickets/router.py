@@ -36,6 +36,8 @@ class TicketCreate(BaseModel):
     description: str = Field(min_length=5, max_length=10_000)
     priority: TicketPriority = TicketPriority.MEDIUM
     category: str | None = Field(default=None, max_length=100)
+    # A complaint's related policy: one the creator can read. None for a general question.
+    policy_id: uuid.UUID | None = None
 
 
 class TicketRead(BaseModel):
@@ -45,6 +47,8 @@ class TicketRead(BaseModel):
     kind: str
     level: str
     category: str | None
+    policy_id: uuid.UUID | None
+    policy_name: str | None
     subject: str
     description: str
     priority: str
@@ -55,6 +59,10 @@ class TicketRead(BaseModel):
     assigned_to_name: str | None
     message_count: int
     can_handle: bool
+    # The handler's latest words (a reply or a resolve note): the "manager reply" of a complaint list.
+    last_reply_body: str | None
+    last_reply_by: str | None
+    last_reply_at: datetime | None
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
@@ -85,6 +93,16 @@ class TicketDetail(TicketRead):
     attachments: list[AttachmentRead]
 
 
+class TicketStats(BaseModel):
+    """Tickets of the box in each status."""
+
+    open: int
+    in_progress: int
+    waiting_for_response: int
+    resolved: int
+    closed: int
+
+
 class ReplyCreate(BaseModel):
     body: str = Field(min_length=1, max_length=10_000)
 
@@ -102,9 +120,12 @@ def _read(view: TicketView) -> TicketRead:
     t = view.ticket
     return TicketRead(
         id=t.id, organization_id=t.organization_id, branch_id=t.branch_id, kind=t.kind, level=t.level,
-        category=t.category, subject=t.subject, description=t.description, priority=t.priority, status=t.status,
+        category=t.category, policy_id=t.policy_id, policy_name=view.policy_name, subject=t.subject,
+        description=t.description, priority=t.priority, status=t.status,
         created_by_id=t.created_by_id, created_by_name=view.created_by_name, assigned_to_id=t.assigned_to_id,
         assigned_to_name=view.assigned_to_name, message_count=view.message_count, can_handle=view.can_handle,
+        last_reply_body=reply.body if (reply := view.last_reply) else None,
+        last_reply_by=reply.author_name if reply else None, last_reply_at=reply.at if reply else None,
         created_at=t.created_at, updated_at=t.updated_at, resolved_at=t.resolved_at, closed_at=t.closed_at,
     )
 
@@ -124,7 +145,7 @@ def _detail(service: TicketService, principal: Principal, ticket_id: uuid.UUID) 
 def create_ticket(body: TicketCreate, principal: Supporter, service: Service):
     """Raise a complaint (Users) or support ticket; it is routed to the level above the caller."""
     ticket = service.create(principal, kind=body.kind, subject=body.subject, description=body.description,
-                            priority=body.priority, category=body.category)
+                            priority=body.priority, category=body.category, policy_id=body.policy_id)
     return ok(_detail(service, principal, ticket.id))
 
 
@@ -134,10 +155,20 @@ def list_tickets(
     box: Literal["all", "mine", "queue"] = "all",
     status: Annotated[str | None, Query(pattern="^(active|open|in_progress|waiting_for_response|resolved|closed)$")] = None,
     kind: TicketKind | None = None,
+    search: Annotated[str | None, Query(max_length=200)] = None,
 ):
-    """box=mine: tickets I raised; box=queue: tickets I handle."""
-    views, total = service.find(principal, box=box, status=status, kind=kind, limit=page.limit, offset=page.offset)
+    """box=mine: tickets I raised; box=queue: tickets I handle. search: subject, details, category, creator, policy."""
+    views, total = service.find(principal, box=box, status=status, kind=kind, limit=page.limit, offset=page.offset,
+                                search=search)
     return ok(Page(items=[_read(v) for v in views], total=total, **page.model_dump()))
+
+
+@router.get("/stats", response_model=ApiResponse[TicketStats])
+def ticket_stats(
+    principal: Supporter, service: Service,
+    box: Literal["all", "mine", "queue"] = "all", kind: TicketKind | None = None,
+):
+    return ok(TicketStats(**service.stats(principal, box=box, kind=kind)))
 
 
 @router.get("/{ticket_id}", response_model=ApiResponse[TicketDetail])

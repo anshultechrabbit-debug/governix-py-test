@@ -52,6 +52,8 @@ class Ticket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(String(20))
     level: Mapped[str] = mapped_column(String(20))
     category: Mapped[str | None] = mapped_column(String(100))
+    # The policy a complaint is about (one the User can read); NULL for a general question.
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("policies.id", ondelete="SET NULL"))
     subject: Mapped[str] = mapped_column(String(300))
     description: Mapped[str] = mapped_column(Text)
     priority: Mapped[str] = mapped_column(String(10), default=TicketPriority.MEDIUM)
@@ -65,6 +67,7 @@ class Ticket(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_tickets_queue", "organization_id", "level", "status"),
         Index("ix_tickets_branch_queue", "branch_id", "level", "status"),
         Index("ix_tickets_created_by", "created_by_id", "created_at"),
+        Index("ix_tickets_policy", "policy_id"),  # ON DELETE SET NULL lookup
     )
 
 

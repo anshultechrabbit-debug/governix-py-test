@@ -19,6 +19,7 @@ from app.modules.auth.dependencies import principal_from_user
 from app.modules.auth.model import RefreshToken
 from app.modules.auth.permissions import Principal
 from app.modules.auth.schema import Me, TokenPair
+from app.modules.branches.model import Branch
 from app.modules.organizations.model import Organization, OrganizationStatus
 from app.modules.users.model import User
 
@@ -151,6 +152,7 @@ class AuthService:
         organization = (
             self.session.get(Organization, user.organization_id) if user.organization_id else None
         )
+        branch = self.session.get(Branch, user.branch_id) if user.branch_id else None
         return Me(
             id=user.id,
             email=user.email,
@@ -159,6 +161,7 @@ class AuthService:
             organization_id=user.organization_id,
             organization_name=organization.name if organization else None,
             branch_id=user.branch_id,
+            branch_name=branch.name if branch else None,
             department_id=user.department_id,
             permissions=sorted(principal.permissions),
         )

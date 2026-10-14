@@ -1,5 +1,6 @@
 import {
   Bell, Building2, ClipboardCheck, FileStack, FileText, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
+  MessageSquareWarning,
   ScrollText, ShieldCheck, Sparkles, Upload, UserCog, Users, X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -79,6 +80,7 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/users", label: "Branch Users", icon: UserCog, permission: "users:manage" },
         { to: "/assignments", label: "Assign Documents", icon: ClipboardCheck, permission: "policies:assign" },
+        { to: "/complaints", label: "Complaints", icon: MessageSquareWarning, permission: "support" },
       ],
     },
   ],
@@ -89,6 +91,7 @@ const NAV: Record<Role, NavSection[]> = {
         { to: "/", label: "Home", icon: LayoutDashboard, permission: "documents:read", end: true },
         { to: "/assistant", label: "AI Assistant", icon: Sparkles, permission: "ai:query" },
         { to: "/policies", label: "My Policies", icon: ScrollText, permission: "policies:read" },
+        { to: "/complaints", label: "Complaints", icon: MessageSquareWarning, permission: "support" },
       ],
     },
   ],
