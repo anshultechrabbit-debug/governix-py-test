@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.responses import ApiResponse, ok
-from app.modules.assignments.service import AssignableUser, AssignmentRead, AssignmentService
+from app.modules.assignments.service import AssignableUser, AssignmentRead, AssignmentService, UserAssignments
 from app.modules.auth.dependencies import require
 from app.modules.auth.permissions import Permission, Principal
 
@@ -29,6 +29,12 @@ class AssignUsers(BaseModel):
 
 class AssignPolicies(BaseModel):
     policy_ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+@router.get("/assignments/users", response_model=ApiResponse[list[UserAssignments]])
+def assignments_by_user(principal: Assigner, service: Service):
+    """The caller's Users and the policies assigned to each (a Branch Manager: their branch)."""
+    return ok(service.by_user(principal))
 
 
 @router.get("/policies/{policy_id}/assignments", response_model=ApiResponse[list[AssignmentRead]])

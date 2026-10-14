@@ -380,6 +380,11 @@ export interface Branch {
   street_address: string | null; state: string | null; postal_code: string | null;
 }
 export interface Department extends Branch { branch_id: UUID }
+/** GET /assignments/users: a User the caller manages and the policies assigned to them. */
+export interface UserAssignments {
+  user_id: UUID; full_name: string; email: string; is_active: boolean; created_at: string;
+  policies: { policy_id: UUID; policy_name: string; branch_id: UUID | null; assigned_at: string }[];
+}
 export interface User {
   id: UUID; email: string; full_name: string; phone: string | null; role: Me["role"]; organization_id: UUID | null;
   organization_name: string | null; branch_id: UUID | null; branch_name: string | null; department_id: UUID | null;

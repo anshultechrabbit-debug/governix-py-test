@@ -66,22 +66,36 @@ export function PolicyAssignments({ policy }: { policy: { id: string; name: stri
             ))}
           </ul>
         )}
-      <AssignUsersModal policy={policy} open={adding} onClose={() => setAdding(false)} />
+      <AssignPolicyModal policy={policy} open={adding} onClose={() => setAdding(false)} />
     </Card>
   );
 }
 
-function AssignUsersModal({ policy, open, onClose }: { policy: { id: string; name: string }; open: boolean; onClose: () => void }) {
+/**
+ * Assign a policy to Users. With `policy`, that one (a policy's Assignments tab); without, the
+ * policy is chosen first (Assign Documents).
+ */
+export function AssignPolicyModal({ policy: fixed, open, onClose }: {
+  policy?: { id: string; name: string }; open: boolean; onClose: () => void;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
+  const [policyId, setPolicyId] = useState("");
   const [search, setSearch] = useState("");
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  useEffect(() => { if (open) { setSearch(""); setChosen(new Set()); } }, [open]);
+  useEffect(() => { if (open) { setPolicyId(""); setSearch(""); setChosen(new Set()); } }, [open]);
+  const policies = useQuery({
+    queryKey: ["policies", "assignable"],
+    queryFn: () => api.get<Page<Policy>>(`/policies${qs({ status: "active", limit: 200 })}`),
+    enabled: open && !fixed,
+  });
+  const chosenPolicy = policies.data?.items.find((p) => p.id === policyId);
+  const policy = fixed ?? (chosenPolicy && { id: chosenPolicy.id, name: chosenPolicy.name });
   const candidates = useQuery({
-    queryKey: ["assignable", policy.id, search],
-    queryFn: () => api.get<AssignableUser[]>(`/policies/${policy.id}/assignable-users${qs({ search })}`),
-    enabled: open,
+    queryKey: ["assignable", policy?.id, search],
+    queryFn: () => api.get<AssignableUser[]>(`/policies/${policy!.id}/assignable-users${qs({ search })}`),
+    enabled: open && Boolean(policy),
   });
   const toggle = (id: string) => setChosen((current) => {
     const next = new Set(current);
@@ -91,6 +105,7 @@ function AssignUsersModal({ policy, open, onClose }: { policy: { id: string; nam
   });
 
   async function submit() {
+    if (!policy) return;
     setBusy(true);
     try {
       await api.post(`/policies/${policy.id}/assignments`, { user_ids: [...chosen] });
@@ -105,10 +120,19 @@ function AssignUsersModal({ policy, open, onClose }: { policy: { id: string; nam
   }
 
   return (
-    <Modal open={open} onClose={onClose} title={`Assign ${policy.name}`}
+    <Modal open={open} onClose={onClose} icon={<UserPlus className="size-5" />} title={fixed ? `Assign ${fixed.name}` : "Assign document"}
+      description={fixed ? undefined : "Choose a policy, then the users who may read it. They are notified."}
       footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button disabled={!chosen.size} loading={busy} onClick={submit}>Assign {chosen.size || ""}</Button></>}>
-      <Input placeholder="Search users by name or email…" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus />
+        <Button disabled={!policy || !chosen.size} loading={busy} onClick={submit}>Assign {chosen.size || ""}</Button></>}>
+      {!fixed && (
+        <Select className="mb-3" value={policyId} aria-label="Policy to assign" autoFocus
+          onChange={(e) => { setPolicyId(e.target.value); setChosen(new Set()); }}>
+          <option value="">Choose a policy…</option>
+          {policies.data?.items.map((p) => <option key={p.id} value={p.id}>{p.name}{p.branch_id ? "" : " (global)"}</option>)}
+        </Select>
+      )}
+      {!policy ? <p className="text-sm text-muted">Choose a policy to see the users it can be assigned to.</p> : <>
+      <Input placeholder="Search users by name or email…" value={search} onChange={(e) => setSearch(e.target.value)} autoFocus={Boolean(fixed)} />
       <p className="mt-2 text-xs text-muted">Only users this policy's branch scope reaches are listed.</p>
       <ul className="mt-3 max-h-80 divide-y divide-line overflow-y-auto rounded-md border border-line">
         {candidates.isLoading && <li className="p-3"><SkeletonRows rows={2} /></li>}
@@ -123,12 +147,13 @@ function AssignUsersModal({ policy, open, onClose }: { policy: { id: string; nam
         ))}
         {candidates.data && !candidates.data.length && <li className="px-3 py-6 text-center text-sm text-muted">No users found.</li>}
       </ul>
+      </>}
     </Modal>
   );
 }
 
 /** The Users page: which policies one User can read, and assigning more. */
-export function UserPoliciesModal({ user, onClose }: { user: User | null; onClose: () => void }) {
+export function UserPoliciesModal({ user, onClose }: { user: Pick<User, "id" | "full_name"> | null; onClose: () => void }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [policyId, setPolicyId] = useState("");

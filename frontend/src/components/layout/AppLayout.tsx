@@ -1,5 +1,5 @@
 import {
-  Bell, Building2, FileStack, FileText, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
+  Bell, Building2, ClipboardCheck, FileStack, FileText, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
   ScrollText, ShieldCheck, Sparkles, Upload, UserCog, Users, X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -76,7 +76,10 @@ const NAV: Record<Role, NavSection[]> = {
     },
     {
       section: "My Branch",
-      items: [{ to: "/users", label: "Branch Users", icon: UserCog, permission: "users:manage" }],
+      items: [
+        { to: "/users", label: "Branch Users", icon: UserCog, permission: "users:manage" },
+        { to: "/assignments", label: "Assign Documents", icon: ClipboardCheck, permission: "policies:assign" },
+      ],
     },
   ],
   department_user: [

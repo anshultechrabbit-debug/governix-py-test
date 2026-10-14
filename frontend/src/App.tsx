@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from "react-router";
 import { Spinner, Toaster } from "./components/ui";
 import { AppLayout } from "./components/layout/AppLayout";
 import { AdminUsersPage } from "./pages/AdminUsersPage";
+import { AssignDocumentsPage } from "./pages/AssignDocumentsPage";
 import { AssistantPage } from "./pages/AssistantPage";
 import { BranchesPage } from "./pages/BranchesPage";
 import { DashboardPage } from "./pages/DashboardPage";
@@ -80,6 +81,7 @@ export function App() {
           {/* Organization */}
           <Route path="users" element={<Guard permission="users:manage">{me.role === "master_admin" || me.role === "org_admin" ? <AdminUsersPage /> : <UsersPage />}</Guard>} />
           <Route path="branches" element={<Guard permission="branches:manage"><BranchesPage /></Guard>} />
+          <Route path="assignments" element={<Guard permission="policies:assign"><AssignDocumentsPage /></Guard>} />
           <Route path="organizations" element={<Guard permission="organizations:manage"><OrganizationsPage /></Guard>} />
           <Route path="organizations/:id/nginx" element={<Guard permission="organizations:manage"><NginxPage /></Guard>} />
 

@@ -44,6 +44,24 @@ class AssignmentRead(BaseModel):
     removed_by_name: str | None
 
 
+class AssignedPolicy(BaseModel):
+    policy_id: uuid.UUID
+    policy_name: str
+    branch_id: uuid.UUID | None  # None: an organization-wide (global) policy
+    assigned_at: datetime
+
+
+class UserAssignments(BaseModel):
+    """One User and the policies currently assigned to them (Assign Documents page)."""
+
+    user_id: uuid.UUID
+    full_name: str
+    email: str
+    is_active: bool
+    created_at: datetime
+    policies: list[AssignedPolicy]
+
+
 class AssignableUser(BaseModel):
     id: uuid.UUID
     full_name: str
@@ -193,6 +211,24 @@ class AssignmentService:
         if not include_removed:
             query = query.where(PolicyAssignment.removed_at.is_(None))
         return self._reads(query)
+
+    def by_user(self, principal: Principal) -> list[UserAssignments]:
+        """Every User the caller manages, each with their current assignments (a branch's staff)."""
+        users = self.session.scalars(self._manageable_users(principal).order_by(User.full_name).limit(1000)).all()
+        assigned: dict[uuid.UUID, list[AssignedPolicy]] = {u.id: [] for u in users}
+        rows = self.session.execute(
+            select(PolicyAssignment.user_id, Policy.id, Policy.name, Policy.branch_id, PolicyAssignment.created_at)
+            .join(Policy, Policy.id == PolicyAssignment.policy_id)
+            .where(PolicyAssignment.user_id.in_(list(assigned)), PolicyAssignment.removed_at.is_(None))
+            .order_by(Policy.name)
+        ).all() if assigned else []
+        for user_id, policy_id, name, branch_id, at in rows:
+            assigned[user_id].append(AssignedPolicy(policy_id=policy_id, policy_name=name, branch_id=branch_id, assigned_at=at))
+        return [
+            UserAssignments(user_id=u.id, full_name=u.full_name, email=u.email, is_active=u.is_active,
+                            created_at=u.created_at, policies=assigned[u.id])
+            for u in users
+        ]
 
     def assignable_users(self, principal: Principal, policy_id: uuid.UUID, search: str | None) -> list[AssignableUser]:
         """Users the caller may assign this policy to (its scope reaches them), with their current state."""
