@@ -125,11 +125,16 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_TTL_DAYS: int = 7
     LOGIN_MAX_FAILED_ATTEMPTS: int = 5
     LOGIN_LOCKOUT_MINUTES: int = 15
-    # Session cookies get the Secure flag when the request came over HTTPS (None), or always / never.
-    # Browsers drop Secure cookies on plain HTTP, so never force True on an HTTP-only site.
     AUTH_COOKIE_SECURE: bool | None = None
-    CORS_ORIGINS: list[str] = ["http://localhost:5173"]
-    # The range an organization's dedicated access port is chosen from.
+    AUTH_COOKIE_SAMESITE: str = "lax"
+    CORS_ORIGINS: list[str] = [
+        "http://localhost:5173",
+        "http://localhost:7001",
+        "http://172.16.0.2:7001",
+        "http://192.168.1.4:7001",
+        "http://192.168.1.147:7001",
+        "*",
+    ]
     TENANT_PORT_MIN: int = 7001
     TENANT_PORT_MAX: int = 7100
 

@@ -43,11 +43,16 @@ def login(body: LoginRequest, request: Request, response: Response, service: Ser
 
 @router.post("/refresh", response_model=ApiResponse[AuthSession])
 def refresh(request: Request, response: Response, service: Service, settings: AppSettings):
-    require_csrf(request, request.cookies.get(CSRF_COOKIE))
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if not refresh_token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.lower().startswith("bearer "):
+            refresh_token = auth_header[7:].strip()
+    if not refresh_token:
+        raise AuthenticationError("Authentication required.")
+    if request.cookies.get(CSRF_COOKIE):
+        require_csrf(request, request.cookies.get(CSRF_COOKIE))
     try:
-        refresh_token = request.cookies.get(REFRESH_COOKIE)
-        if not refresh_token:
-            raise AuthenticationError("Authentication required.")
         tokens = service.refresh(refresh_token)
     except AuthenticationError as exc:
         if exc.code == "TOKEN_ROTATED":

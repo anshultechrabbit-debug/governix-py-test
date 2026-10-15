@@ -48,10 +48,17 @@ def get_current_principal(
     settings: Annotated[Settings, Depends(get_app_settings)],
     db: Annotated[Session, Depends(get_db)],
 ) -> Principal:
-    if not access_token:
+    token_from_header = None
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token_from_header = auth_header[7:].strip()
+
+    token = token_from_header or access_token
+    if not token:
         raise AuthenticationError("Authentication required.")
-    claims = decode_access_token(settings, access_token)
-    require_csrf(request, claims.get("csrf"))
+    claims = decode_access_token(settings, token)
+    if request.headers.get("X-CSRF-Token"):
+        require_csrf(request, claims.get("csrf"))
     try:
         user_id = uuid.UUID(claims["sub"])
     except ValueError:

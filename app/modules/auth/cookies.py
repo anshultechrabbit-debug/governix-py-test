@@ -36,16 +36,16 @@ def set_auth_cookies(response: Response, request: Request, settings: Settings, t
     secure = _secure(request, settings)
     response.set_cookie(
         ACCESS_COOKIE, tokens.access_token, max_age=tokens.expires_in,
-        httponly=True, secure=secure, samesite="strict",
+        httponly=True, secure=secure, samesite="lax",
     )
-    response.set_cookie(REFRESH_COOKIE, tokens.refresh_token, httponly=True, secure=secure, samesite="strict")
-    response.set_cookie(CSRF_COOKIE, tokens.csrf_token, secure=secure, samesite="strict")
+    response.set_cookie(REFRESH_COOKIE, tokens.refresh_token, httponly=True, secure=secure, samesite="lax")
+    response.set_cookie(CSRF_COOKIE, tokens.csrf_token, secure=secure, samesite="lax")
 
 
 def clear_auth_cookies(response: Response, request: Request, settings: Settings) -> None:
     secure = _secure(request, settings)
     for name in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
-        response.delete_cookie(name, httponly=name != CSRF_COOKIE, secure=secure, samesite="strict")
+        response.delete_cookie(name, httponly=name != CSRF_COOKIE, secure=secure, samesite="lax")
 
 
 def csrf_matches(request: Request, expected: str | None) -> bool:

@@ -143,10 +143,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
-        allow_credentials=False,
+        allow_credentials=True,
         allow_methods=["*"],
-        allow_headers=["Content-Type", "X-Request-ID", "X-CSRF-Token"],
-        expose_headers=["X-Request-ID"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        allow_private_network=True,
     )
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(MetricsMiddleware, metrics=app.state.metrics)
