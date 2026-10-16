@@ -125,6 +125,24 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_TTL_DAYS: int = 7
     LOGIN_MAX_FAILED_ATTEMPTS: int = 5
     LOGIN_LOCKOUT_MINUTES: int = 15
+    # Forgot password: the emailed link is PASSWORD_RESET_URL?token=..., valid this long and once.
+    # Set the URL to the portal's reset page as users reach it (e.g. http://192.168.1.4:7001/reset-password);
+    # it is never taken from the request, so a forged Host or Origin cannot redirect the token.
+    PASSWORD_RESET_URL: str = "http://localhost:5173/reset-password"
+    PASSWORD_RESET_TTL_MINUTES: int = 30
+    # Outgoing email (password reset links). Without SMTP_HOST nothing is sent: locally the message,
+    # link included, is written to the log; in production only the fact that it was not sent.
+    SMTP_HOST: str | None = None
+    SMTP_PORT: int = 587
+    SMTP_USERNAME: str | None = None
+    SMTP_PASSWORD: SecretStr | None = None
+    SMTP_FROM: str = "Governix <no-reply@governix.local>"
+    SMTP_STARTTLS: bool = True  # port 587; set SMTP_SSL instead for port 465
+    SMTP_SSL: bool = False
+    SMTP_TIMEOUT_SECONDS: float = 10.0
+    # Where the browser reaches this API: the Vite dev proxy and nginx serve it under /api and strip it.
+    # Links the API hands out for the browser (an organization's logo_url) start with it.
+    API_PUBLIC_PREFIX: str = "/api"
     AUTH_COOKIE_SECURE: bool | None = None
     AUTH_COOKIE_SAMESITE: str = "lax"
     CORS_ORIGINS: list[str] = [

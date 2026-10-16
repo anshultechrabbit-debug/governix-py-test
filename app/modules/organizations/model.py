@@ -3,7 +3,7 @@ from enum import StrEnum
 from sqlalchemy import BigInteger, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.core.database import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 
 class OrganizationStatus(StrEnum):
@@ -11,7 +11,7 @@ class OrganizationStatus(StrEnum):
     SUSPENDED = "suspended"
 
 
-class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+class Organization(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "organizations"
 
     name: Mapped[str] = mapped_column(String(200))
@@ -29,6 +29,7 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     contact_phone: Mapped[str | None] = mapped_column(String(50))
     website: Mapped[str | None] = mapped_column(String(300))
     address: Mapped[str | None] = mapped_column(Text)
+    
     # The Google Font applied across the tenant portal (one of schema.BRAND_FONTS).
     brand_font: Mapped[str | None] = mapped_column(String(100))
     # The tenant's dedicated access port (TENANT_PORT_MIN..MAX). Recorded and reserved here;

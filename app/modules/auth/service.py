@@ -7,11 +7,15 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.exceptions import AuthenticationError, ValidationError
 from app.core.security import (
+    INVALID_RESET_LINK,
     create_access_token,
+    create_password_reset_token,
+    decode_password_reset_token,
     generate_opaque_token,
     hash_password,
     hash_token,
     password_needs_rehash,
+    reset_token_matches,
     verify_password,
 )
 from app.modules.audit.service import record_event
@@ -29,6 +33,13 @@ INVALID_CREDENTIALS = "Invalid email or password."
 ROTATION_GRACE = timedelta(seconds=30)
 
 
+def _is_active(organization: Organization | None) -> bool:
+    return (
+        organization is not None and organization.deleted_at is None
+        and organization.status == OrganizationStatus.ACTIVE
+    )
+
+
 class AuthService:
     def __init__(self, session: Session, settings: Settings) -> None:
         self.session = session
@@ -36,7 +47,7 @@ class AuthService:
 
     def login(self, email: str, password: str) -> TokenPair:
         user = self.session.scalar(
-            select(User).where(func.lower(User.email) == email.lower()).with_for_update()
+            select(User).where(func.lower(User.email) == email.lower(), User.deleted_at.is_(None)).with_for_update()
         )
         now = datetime.now(UTC)
 
@@ -55,7 +66,7 @@ class AuthService:
             raise AuthenticationError(INVALID_CREDENTIALS, code="INVALID_CREDENTIALS")
         if user.organization_id is not None:
             organization = self.session.get(Organization, user.organization_id)
-            if organization.status != OrganizationStatus.ACTIVE:
+            if not _is_active(organization):
                 raise AuthenticationError(
                     "Organization is not active.", code="ORGANIZATION_SUSPENDED"
                 )
@@ -104,11 +115,11 @@ class AuthService:
             raise AuthenticationError("Refresh token expired.", code="TOKEN_EXPIRED")
 
         user = self.session.get(User, stored.user_id)
-        if user is None or not user.is_active:
+        if user is None or user.deleted_at is not None or not user.is_active:
             raise AuthenticationError("Invalid refresh token.", code="INVALID_TOKEN")
         if user.organization_id is not None:
             organization = self.session.get(Organization, user.organization_id)
-            if organization.status != OrganizationStatus.ACTIVE:
+            if not _is_active(organization):
                 raise AuthenticationError(
                     "Organization is not active.", code="ORGANIZATION_SUSPENDED"
                 )
@@ -135,17 +146,70 @@ class AuthService:
             raise ValidationError("New password must differ from the current password.")
         user.password_hash = hash_password(new)
         # Log out every session, including this one's other devices.
+        self._end_sessions(user)
+        record_event(
+            self.session, "auth.password_changed", actor=principal, resource_type="user",
+            resource_id=user.id,
+        )
+        self.session.commit()
+
+    def forgot_password(self, email: str) -> tuple[User, str] | None:
+        """The account and a reset token for it, or None when no one may reset by this email.
+
+        The caller answers the same either way, so the response never reveals whether an email is
+        registered. Deactivated or deleted accounts, and suspended organizations, get no link.
+        """
+        user = self.session.scalar(
+            select(User).where(func.lower(User.email) == email.lower(), User.deleted_at.is_(None))
+        )
+        if user is None or not user.is_active:
+            return None
+        if user.organization_id is not None and not _is_active(self.session.get(Organization, user.organization_id)):
+            return None
+        token = create_password_reset_token(
+            self.settings, user_id=user.id, token_version=user.token_version, password_hash=user.password_hash
+        )
+        record_event(
+            self.session, "auth.password_reset_requested", organization_id=user.organization_id,
+            resource_type="user", resource_id=user.id,
+        )
+        self.session.commit()
+        return user, token
+
+    def reset_password(self, token: str, new_password: str) -> None:
+        """Set the password a reset link was sent for. The link works once, and every session ends."""
+        claims = decode_password_reset_token(self.settings, token)
+        try:
+            user_id = uuid.UUID(claims["sub"])
+        except ValueError:
+            raise ValidationError(INVALID_RESET_LINK, code="INVALID_RESET_TOKEN") from None
+        user = self.session.get(User, user_id, with_for_update=True)
+        if (
+            user is None or user.deleted_at is not None or not user.is_active
+            or not reset_token_matches(claims, token_version=user.token_version, password_hash=user.password_hash)
+        ):
+            raise ValidationError(INVALID_RESET_LINK, code="INVALID_RESET_TOKEN")
+        if verify_password(new_password, user.password_hash):
+            raise ValidationError("New password must differ from the current password.")
+        user.password_hash = hash_password(new_password)
+        # A forgotten password ends the lockout it may have caused.
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        self._end_sessions(user)
+        record_event(
+            self.session, "auth.password_reset_completed", actor=principal_from_user(user, self.session),
+            resource_type="user", resource_id=user.id,
+        )
+        self.session.commit()
+
+    def _end_sessions(self, user: User) -> None:
+        """Invalidate every access token and revoke every refresh token of the user."""
         user.token_version += 1
         self.session.execute(
             update(RefreshToken)
             .where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
             .values(revoked_at=datetime.now(UTC))
         )
-        record_event(
-            self.session, "auth.password_changed", actor=principal, resource_type="user",
-            resource_id=user.id,
-        )
-        self.session.commit()
 
     def me(self, principal: Principal) -> Me:
         user = self.session.get(User, principal.user_id)

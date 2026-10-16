@@ -13,11 +13,15 @@ class UserRepository:
         self.session = session
 
     def get(self, user_id: uuid.UUID) -> User | None:
-        return self.session.get(User, user_id)
+        user = self.session.get(User, user_id)
+        return user if user is not None and user.deleted_at is None else None
 
     def email_exists(self, email: str) -> bool:
+        """Whether a live account uses the email; a deleted one's may be reused."""
         return (
-            self.session.scalar(select(User.id).where(func.lower(User.email) == email.lower()))
+            self.session.scalar(
+                select(User.id).where(func.lower(User.email) == email.lower(), User.deleted_at.is_(None))
+            )
             is not None
         )
 
@@ -29,6 +33,7 @@ class UserRepository:
         branch_id: uuid.UUID | None,
         roles: frozenset[str] | None,
     ) -> Select:
+        query = query.where(User.deleted_at.is_(None))
         if organization_id is not None:
             query = query.where(User.organization_id == organization_id)
         if branch_id is not None:

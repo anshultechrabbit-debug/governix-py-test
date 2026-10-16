@@ -561,18 +561,15 @@ function EditUserModal({ scope, user, onClose }: { scope: Scope; user: User | nu
 }
 
 /**
- * Only an account that never signed in can be deleted (the backend enforces it): anyone who
- * signed in may have acted, and deleting them would blank their name in the audit trail.
+ * Deleting is soft: the account leaves every list and is signed out everywhere, but the row stays,
+ * so the audit trail keeps the person's name. The email may then be used for a new account.
  */
 function DeleteUserModal({ user, onClose }: { user: User | null; onClose: () => void }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [signedIn, setSignedIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    if (user) { setSignedIn(Boolean(user.last_login_at)); setError(null); }
-  }, [user]);
+  useEffect(() => { if (user) setError(null); }, [user]);
 
   async function remove() {
     if (!user) return;
@@ -584,58 +581,22 @@ function DeleteUserModal({ user, onClose }: { user: User | null; onClose: () => 
       toast("ok", `${user.full_name} deleted.`);
       onClose();
     } catch (err) {
-      if (err instanceof ApiError && err.code === "USER_HAS_SIGNED_IN") setSignedIn(true);
-      else setError(err instanceof ApiError ? err.message : "Could not delete the user.");
+      setError(err instanceof ApiError ? err.message : "Could not delete the user.");
     } finally {
       setBusy(false);
     }
   }
-
-  async function suspend() {
-    if (!user) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.patch<User>(`/users/${user.id}`, { is_active: false });
-      void queryClient.invalidateQueries({ queryKey: ["users"] });
-      toast("ok", `${user.full_name} suspended.`);
-      onClose();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not suspend the user.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const footer = !signedIn ? (
-    <><Button variant="secondary" onClick={onClose}>Cancel</Button>
-      <Button variant="danger" loading={busy} onClick={remove}><Trash2 className="size-4" />Delete permanently</Button></>
-  ) : user?.is_active ? (
-    <><Button variant="secondary" onClick={onClose}>Cancel</Button>
-      <Button variant="danger" loading={busy} onClick={suspend}>Suspend account</Button></>
-  ) : (
-    <Button variant="secondary" onClick={onClose}>Close</Button>
-  );
 
   return (
-    <Modal open={Boolean(user)} onClose={onClose} icon={<Trash2 className="size-5" />}
-      title={signedIn ? `${user?.full_name} can't be deleted` : `Delete ${user?.full_name}?`} footer={footer}>
+    <Modal open={Boolean(user)} onClose={onClose} icon={<Trash2 className="size-5" />} title={`Delete ${user?.full_name}?`}
+      footer={<><Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button variant="danger" loading={busy} onClick={remove}><Trash2 className="size-4" />Delete user</Button></>}>
       <div className="space-y-3 text-sm text-ink-soft">
-        {!signedIn ? (
-          <p>{user?.full_name} ({user?.email}) has never signed in. The account will be removed permanently; this can't be undone.</p>
-        ) : (
-          <>
-            <p>
-              {user?.full_name} has signed in before, so deleting the account would remove their name from the audit trail
-              of everything they did.
-            </p>
-            <p>
-              {user?.is_active
-                ? "Suspend it instead: they are signed out everywhere and can't sign in, and you can reactivate the account later from Edit."
-                : "The account is already suspended, so they can't sign in."}
-            </p>
-          </>
-        )}
+        <p>
+          {user?.full_name} ({user?.email}) is signed out everywhere and can no longer sign in. The account leaves
+          every list, but its record is kept, so the audit trail still shows their name.
+        </p>
+        <p>The email can be used for a new account afterwards.</p>
         {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-bad-600" role="alert">{error}</p>}
       </div>
     </Modal>

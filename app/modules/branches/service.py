@@ -10,6 +10,8 @@ from app.modules.auth.scope import tenant_id
 from app.modules.branches.model import Branch
 from app.modules.branches.repository import BranchRepository
 from app.modules.branches.schema import BranchCreate, BranchUpdate
+from app.modules.organizations import hierarchy
+from app.modules.organizations.schema import DeletionPreview, DeletionResult
 
 
 class BranchService:
@@ -60,3 +62,10 @@ class BranchService:
         )
         self.session.commit()
         return branch
+
+    def deletion_preview(self, principal: Principal, branch_id: uuid.UUID) -> DeletionPreview:
+        return hierarchy.preview(self.session, hierarchy.Target(self.get(principal, branch_id)))
+
+    def delete(self, principal: Principal, branch_id: uuid.UUID, *, confirm: bool) -> DeletionResult:
+        """Soft-delete the branch with its departments and users (see organizations/hierarchy.py)."""
+        return hierarchy.delete(self.session, principal, hierarchy.Target(self.get(principal, branch_id)), confirm=confirm)

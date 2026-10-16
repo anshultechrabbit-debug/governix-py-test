@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Pencil, Plus } from "lucide-react";
+import { Building2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type { Branch, Page } from "../api/types";
+import { DeleteHierarchyDialog } from "../components/DeleteHierarchy";
 import { BranchFields, branchAddress, branchBody, branchReady, EMPTY_BRANCH, type BranchDraft } from "../components/BranchFields";
 import {
   Button,
@@ -27,6 +28,7 @@ export function BranchesPage() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Branch | null>(null);
+  const [deleting, setDeleting] = useState<Branch | null>(null);
   const [branch, setBranch] = useState<BranchDraft>(EMPTY_BRANCH);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -125,6 +127,11 @@ export function BranchesPage() {
                     >
                       {branch.is_active ? "Deactivate" : "Activate"}
                     </Button>
+                    {can("branches:manage") && (
+                      <Button variant="ghost" size="sm" className="text-bad-600 hover:bg-bad-50" onClick={() => setDeleting(branch)}>
+                        <Trash2 className="size-3.5" />Delete
+                      </Button>
+                    )}
                   </div>
                 </td>
               </tr>
@@ -167,6 +174,7 @@ export function BranchesPage() {
       </Modal>
 
       <EditBranchModal branch={editing} onClose={() => setEditing(null)} />
+      <DeleteHierarchyDialog type="branch" target={deleting} onClose={() => setDeleting(null)} />
     </>
   );
 }

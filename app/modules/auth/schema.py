@@ -15,6 +15,20 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
 
 
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    # From the emailed link (PASSWORD_RESET_URL?token=...).
+    token: str = Field(min_length=1, max_length=2048)
+    new_password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
+
+
+class Message(BaseModel):
+    message: str
+
+
 class TokenPair(BaseModel):
     """Issued tokens. Internal only: they reach the browser as cookies (`cookies.py`), never in a body."""
 

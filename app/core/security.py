@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 
 from app.core.config import Settings
-from app.core.exceptions import AuthenticationError
+from app.core.exceptions import AuthenticationError, ValidationError
 
 _password_hasher = PasswordHasher()
 # Verified against when the user does not exist, so login timing does not
@@ -17,6 +17,7 @@ _password_hasher = PasswordHasher()
 _DUMMY_HASH = _password_hasher.hash(secrets.token_urlsafe(16))
 
 MIN_PASSWORD_LENGTH = 12
+INVALID_RESET_LINK = "This reset link is not valid or has already been used. Ask for a new one."
 
 
 def hash_password(password: str) -> str:
@@ -76,6 +77,54 @@ def decode_access_token(settings: Settings, token: str) -> dict[str, Any]:
     if payload.get("type") != "access":
         raise AuthenticationError("Invalid access token.", code="INVALID_TOKEN")
     return payload
+
+
+def _password_fingerprint(password_hash: str) -> str:
+    """Ties a reset token to the password it replaces: once that changes, the token is spent."""
+    return hashlib.sha256(password_hash.encode()).hexdigest()[:32]
+
+
+def create_password_reset_token(
+    settings: Settings, *, user_id: uuid.UUID, token_version: int, password_hash: str
+) -> str:
+    """A signed, single-use link token. No row is stored: setting the password (or any session
+    reset, which bumps token_version) invalidates it."""
+    now = datetime.now(UTC)
+    payload = {
+        "sub": str(user_id),
+        "tv": token_version,
+        "pwd": _password_fingerprint(password_hash),
+        "type": "password_reset",
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.PASSWORD_RESET_TTL_MINUTES),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_password_reset_token(settings: Settings, token: str) -> dict[str, Any]:
+    """The token's claims; raises ValidationError (not 401: the reader is signed out) when unusable."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET.get_secret_value(),
+            algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp", "iat", "sub", "type", "tv", "pwd"]},
+        )
+    except jwt.ExpiredSignatureError:
+        raise ValidationError(
+            "This reset link has expired. Ask for a new one.", code="RESET_TOKEN_EXPIRED"
+        ) from None
+    except jwt.PyJWTError:
+        raise ValidationError(INVALID_RESET_LINK, code="INVALID_RESET_TOKEN") from None
+    if payload.get("type") != "password_reset":
+        raise ValidationError(INVALID_RESET_LINK, code="INVALID_RESET_TOKEN")
+    return payload
+
+
+def reset_token_matches(claims: dict[str, Any], *, token_version: int, password_hash: str) -> bool:
+    return claims.get("tv") == token_version and secrets.compare_digest(
+        str(claims.get("pwd")), _password_fingerprint(password_hash)
+    )
 
 
 def generate_opaque_token() -> str:

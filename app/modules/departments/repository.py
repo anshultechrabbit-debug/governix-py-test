@@ -13,7 +13,8 @@ class DepartmentRepository:
     def get_in_org(self, organization_id: uuid.UUID, department_id: uuid.UUID) -> Department | None:
         return self.session.scalar(
             select(Department).where(
-                Department.id == department_id, Department.organization_id == organization_id
+                Department.id == department_id, Department.organization_id == organization_id,
+                Department.deleted_at.is_(None),
             )
         )
 
@@ -25,7 +26,9 @@ class DepartmentRepository:
         limit: int,
         offset: int,
     ) -> tuple[list[Department], int]:
-        query = select(Department).where(Department.organization_id == organization_id)
+        query = select(Department).where(
+            Department.organization_id == organization_id, Department.deleted_at.is_(None)
+        )
         if branch_id is not None:
             query = query.where(Department.branch_id == branch_id)
         total = self.session.scalar(select(func.count()).select_from(query.subquery()))

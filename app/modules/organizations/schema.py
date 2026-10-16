@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.config import get_settings
 from app.modules.organizations.model import OrganizationStatus
 from app.modules.users.schema import MIN_PASSWORD_LENGTH
 
@@ -70,6 +72,9 @@ class OrganizationRead(BaseModel):
     brand_font: str | None = None
     allowed_port: int | None = None
     has_logo: bool = False
+    # The logo as the browser loads it (<img src>; the session cookie authorises it), or None.
+    # `v` changes when the organisation is saved, so a new logo is not served from the browser cache.
+    logo_url: str | None = None
 
 
 class TakenPort(BaseModel):
@@ -87,7 +92,56 @@ class OrganizationOptions(BaseModel):
     fonts: list[str]
 
 
+DeletableType = Literal["organization", "branch", "department"]
+
+
+class HierarchyNode(BaseModel):
+    """One level of what a delete reaches: its people and policies, and the levels below it."""
+
+    type: DeletableType
+    id: uuid.UUID
+    name: str
+    code: str | None = None
+    # People at exactly this level, by role (an organization's admins, a branch's manager and
+    # Users outside any department, a department's Users).
+    users: dict[str, int] = Field(default_factory=dict)
+    # Active policies scoped to exactly this level.
+    policies: int = 0
+    children: list["HierarchyNode"] = Field(default_factory=list)
+
+
+class DeletionCounts(BaseModel):
+    """Everything below the deleted record that goes with it."""
+
+    branches: int = 0
+    departments: int = 0
+    users: int = 0
+    policies: int = 0  # archived, not deleted
+
+
+class DeletionPreview(BaseModel):
+    """What the confirmation dialog shows: "Delete all" sends the delete with confirm=true."""
+
+    resource_type: DeletableType
+    id: uuid.UUID
+    name: str
+    message: str
+    counts: DeletionCounts
+    hierarchy: HierarchyNode
+
+
+class DeletionResult(BaseModel):
+    resource_type: DeletableType
+    id: uuid.UUID
+    message: str
+    counts: DeletionCounts
+
+
 def organization_read(organization) -> OrganizationRead:
     read = OrganizationRead.model_validate(organization)
     read.has_logo = organization.logo_key is not None
+    if read.has_logo:
+        prefix = get_settings().API_PUBLIC_PREFIX.rstrip("/")
+        version = int(organization.updated_at.timestamp())
+        read.logo_url = f"{prefix}/organizations/{organization.id}/logo?v={version}"
     return read

@@ -11,6 +11,8 @@ from app.modules.branches.repository import BranchRepository
 from app.modules.departments.model import Department
 from app.modules.departments.repository import DepartmentRepository
 from app.modules.departments.schema import DepartmentCreate, DepartmentUpdate
+from app.modules.organizations import hierarchy
+from app.modules.organizations.schema import DeletionPreview, DeletionResult
 
 
 class DepartmentService:
@@ -75,3 +77,15 @@ class DepartmentService:
         )
         self.session.commit()
         return department
+
+    def _deletable(self, principal: Principal, department_id: uuid.UUID) -> hierarchy.Target:
+        department = self.get(principal, department_id)
+        self._check_branch_access(principal, department.branch_id)
+        return hierarchy.Target(department)
+
+    def deletion_preview(self, principal: Principal, department_id: uuid.UUID) -> DeletionPreview:
+        return hierarchy.preview(self.session, self._deletable(principal, department_id))
+
+    def delete(self, principal: Principal, department_id: uuid.UUID, *, confirm: bool) -> DeletionResult:
+        """Soft-delete the department with its users (see organizations/hierarchy.py)."""
+        return hierarchy.delete(self.session, principal, self._deletable(principal, department_id), confirm=confirm)

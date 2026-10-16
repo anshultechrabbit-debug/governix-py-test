@@ -13,6 +13,7 @@ import { DocumentViewerPage } from "./pages/DocumentViewerPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { NginxPage } from "./pages/NginxPage";
+import { ForgotPasswordPage, ResetPasswordPage } from "./pages/PasswordResetPages";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { ComparePage } from "./pages/ComparePage";
@@ -52,7 +53,11 @@ export function App() {
   if (!me) {
     return (
       <>
-        <Routes><Route path="*" element={<LoginPage />} /></Routes>
+        <Routes>
+          <Route path="forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="reset-password" element={<ResetPasswordPage />} />
+          <Route path="*" element={<LoginPage />} />
+        </Routes>
         <Toaster />
       </>
     );
@@ -62,6 +67,8 @@ export function App() {
   return (
     <>
       <Routes>
+        {/* A reset link opened while signed in: the reset ends this session too. */}
+        <Route path="reset-password" element={<ResetPasswordPage />} />
         <Route element={<AppLayout />}>
           <Route index element={home} />
 

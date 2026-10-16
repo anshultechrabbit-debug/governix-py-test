@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Building2, Landmark, Pencil, Plus, Server } from "lucide-react";
+import { Building2, Landmark, Pencil, Plus, Server, Trash2 } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router";
 import { api, ApiError, qs } from "../api/client";
@@ -7,6 +7,7 @@ import type { NginxOverview, Organization, OrganizationOptions, Page } from "../
 import {
   firstFreePort, newOrgForm, OrganizationFields, orgBody, orgFormOf, orgFormReady, OrgLogo, uploadLogo, type OrgForm,
 } from "../components/OrganizationForm";
+import { DeleteHierarchyDialog } from "../components/DeleteHierarchy";
 import { NginxBadge } from "../components/NginxBadge";
 import {
   Button, Card, EmptyState, ErrorState, Field, Input, Modal, PageHeader, PasswordInput, SkeletonRows, StatusBadge, Table,
@@ -29,6 +30,7 @@ export function OrganizationsPage() {
   const toast = useToast();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Organization | null>(null);
+  const [deleting, setDeleting] = useState<Organization | null>(null);
   const { data, error, isLoading, refetch } = useQuery({
     queryKey: ["organizations"],
     queryFn: () => api.get<Page<Organization>>(`/organizations${qs({ limit: 100 })}`),
@@ -100,6 +102,9 @@ export function OrganizationsPage() {
                         <Server className="size-3.5" />Nginx
                       </Link>
                       <Button variant="ghost" size="sm" onClick={() => toggleStatus(org)}>{org.status === "active" ? "Suspend" : "Activate"}</Button>
+                      <Button variant="ghost" size="sm" className="text-bad-600 hover:bg-bad-50" onClick={() => setDeleting(org)}>
+                        <Trash2 className="size-3.5" />Delete
+                      </Button>
                     </div>
                   </td>
                 </tr>
@@ -109,6 +114,9 @@ export function OrganizationsPage() {
       </Card>
       <CreateOrganizationModal open={creating} onClose={() => setCreating(false)} />
       <EditOrganizationModal org={editing} onClose={() => setEditing(null)} />
+      {/* The freed port and the nginx site list change with the organization. */}
+      <DeleteHierarchyDialog type="organization" target={deleting} onClose={() => setDeleting(null)}
+        invalidate={["organizations", "organization-options", "nginx"]} />
     </>
   );
 }

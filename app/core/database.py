@@ -4,9 +4,9 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from fastapi import Request
-from sqlalchemy import DateTime, Engine, MetaData, create_engine, func
+from sqlalchemy import DateTime, Engine, ForeignKey, MetaData, create_engine, func
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, declared_attr, mapped_column, sessionmaker
 
 from app.core.config import Settings
 from app.core.exceptions import ConflictError
@@ -36,6 +36,16 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )
+
+
+class SoftDeleteMixin:
+    """Deleting keeps the row: it is stamped, deactivated and left out of every listing."""
+
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    @declared_attr
+    def deleted_by_id(cls) -> Mapped[uuid.UUID | None]:
+        return mapped_column(ForeignKey("users.id", ondelete="SET NULL", use_alter=True))
 
 
 def create_db_engine(settings: Settings) -> Engine:

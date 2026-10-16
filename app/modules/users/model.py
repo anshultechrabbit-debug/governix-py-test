@@ -2,12 +2,13 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import text as sql
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
+from app.core.database import Base, SoftDeleteMixin, TimestampMixin, UUIDPrimaryKeyMixin
 
 
-class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+class User(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     __tablename__ = "users"
 
     email: Mapped[str] = mapped_column(String(320))
@@ -32,7 +33,8 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
-        Index("uq_users_email_lower", func.lower(email), unique=True),
+        # A deleted account frees its email for a new one.
+        Index("uq_users_email_lower", func.lower(email), unique=True, postgresql_where=sql("deleted_at IS NULL")),
         # The role determines exactly which scope columns must be set.
         CheckConstraint(
             "(role = 'master_admin' AND organization_id IS NULL AND branch_id IS NULL AND department_id IS NULL)"

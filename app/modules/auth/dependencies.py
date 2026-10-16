@@ -71,7 +71,10 @@ def get_current_principal(
         raise AuthenticationError("Session is no longer valid.", code="INVALID_TOKEN")
     if user.organization_id is not None:
         organization = db.get(Organization, user.organization_id)
-        if organization is None or organization.status != OrganizationStatus.ACTIVE:
+        if (
+            organization is None or organization.deleted_at is not None
+            or organization.status != OrganizationStatus.ACTIVE
+        ):
             raise AuthenticationError("Organization is not active.", code="ORGANIZATION_SUSPENDED")
 
     principal = principal_from_user(user, db)

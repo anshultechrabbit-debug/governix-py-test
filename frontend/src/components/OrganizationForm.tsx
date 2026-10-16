@@ -350,16 +350,11 @@ function FontField({ value, onChange, fonts }: { value: string; onChange: (font:
   );
 }
 
-/** The organization's logo, or a placeholder mark. */
+/** The organization's logo (its `logo_url`, sent with the session cookie), or a placeholder mark. */
 export function OrgLogo({ org, size = "size-9" }: { org: Organization; size?: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  useEffect(() => {
-    if (!org.has_logo) return setSrc(null);
-    let url: string | null = null;
-    api.blobUrl(`/organizations/${org.id}/logo`).then((r) => { url = r.url; setSrc(r.url); }).catch(() => setSrc(null));
-    return () => { if (url) URL.revokeObjectURL(url); };
-  }, [org.id, org.has_logo]);
-  return src
-    ? <img src={src} alt="" className={`${size} rounded border border-line bg-surface object-contain`} />
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [org.logo_url]);
+  return org.logo_url && !failed
+    ? <img src={org.logo_url} alt="" onError={() => setFailed(true)} className={`${size} rounded border border-line bg-surface object-contain`} />
     : <span className={`${size} flex items-center justify-center rounded border border-line bg-subtle text-muted`}><Landmark className="size-4" /></span>;
 }

@@ -399,6 +399,8 @@ export interface Organization {
   id: UUID; name: string; slug: string; status: "active" | "suspended"; created_at: string;
   primary_color: string | null; secondary_color: string | null; contact_email: string | null;
   contact_phone: string | null; website: string | null; address: string | null; has_logo: boolean;
+  /** Browser path of the logo (/api/organizations/{id}/logo?v=...), usable as an <img> src; null without a logo. */
+  logo_url: string | null;
   brand_font: string | null; allowed_port: number | null;
 }
 /** An organization's nginx server block (GET /nginx). `unavailable`: NGINX_CONF_DIR is not set on the server. */
@@ -687,3 +689,24 @@ export interface ConversationMessage {
 export interface ConversationDetail extends Conversation {
   messages: ConversationMessage[];
 }
+
+/* ---------- Deleting an organization, branch or department (soft delete, with what lies below) ---------- */
+export type DeletableType = "organization" | "branch" | "department";
+
+export interface HierarchyNode {
+  type: DeletableType; id: UUID; name: string; code: string | null;
+  /** People at exactly this level, by role. */
+  users: Record<string, number>;
+  /** Active policies scoped to exactly this level; a delete archives them. */
+  policies: number;
+  children: HierarchyNode[];
+}
+
+export interface DeletionCounts { branches: number; departments: number; users: number; policies: number }
+
+export interface DeletionPreview {
+  resource_type: DeletableType; id: UUID; name: string; message: string;
+  counts: DeletionCounts; hierarchy: HierarchyNode;
+}
+
+export interface DeletionResult { resource_type: DeletableType; id: UUID; message: string; counts: DeletionCounts }

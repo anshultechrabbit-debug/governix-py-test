@@ -33,8 +33,12 @@ class RateLimiter:
     the map cannot grow without bound under a stream of unique keys.
     """
 
-    def __init__(self, limit: int, window_seconds: float, *, enabled: bool = True) -> None:
+    def __init__(
+        self, limit: int, window_seconds: float, *, enabled: bool = True,
+        message: str = "Too many AI questions. Please wait a moment and try again.",
+    ) -> None:
         self.limit = float(limit)
+        self.message = message
         self.window = float(window_seconds)
         self.enabled = enabled
         self._buckets: dict[str, _Bucket] = {}
@@ -58,7 +62,7 @@ class RateLimiter:
                 retry_after = max(1, int((cost - bucket.tokens) / (self.limit / self.window)))
                 self._evict(now)
                 raise RateLimitExceededError(
-                    "Too many AI questions. Please wait a moment and try again.",
+                    self.message,
                     details={"retry_after_seconds": retry_after},
                 )
             bucket.tokens -= cost

@@ -278,27 +278,22 @@ class UserService:
         return generated
 
     def delete(self, principal: Principal, user_id: uuid.UUID) -> None:
-        """Remove an account that never signed in (one added by mistake).
-
-        Anyone who has signed in may have acted, and deleting them would blank their name on
-        those audit entries, so they can only be deactivated.
+        """Soft-delete the account: it leaves every list and its sessions end, but the row stays, so
+        audit entries keep the name. Its email may be used for a new account.
         """
         user = self.repository.get(user_id)
         if user is None or not self._can_manage(principal, user):
             raise NotFoundError("User not found.")
         if user.id == principal.user_id:
             raise ValidationError("You cannot delete yourself.")
-        if user.last_login_at is not None:
-            raise ConflictError(
-                f"{user.full_name} has signed in before, so deleting the account would remove them from the"
-                " audit trail. Suspend it instead.",
-                code="USER_HAS_SIGNED_IN",
-            )
+        user.deleted_at, user.deleted_by_id = datetime.now(UTC), principal.user_id
+        user.is_active = False
+        user.token_version += 1
+        self._revoke_refresh_tokens(user.id)
         record_event(
             self.session, "user.deleted", actor=principal, organization_id=user.organization_id,
             resource_type="user", resource_id=user.id, details={"email": user.email, "role": user.role},
         )
-        self.session.delete(user)
         self.session.commit()
 
     def _revoke_refresh_tokens(self, user_id: uuid.UUID) -> None:

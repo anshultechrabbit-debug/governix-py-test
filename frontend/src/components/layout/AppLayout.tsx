@@ -244,20 +244,20 @@ function SideLink({ item: { to, label, icon: Icon, end } }: { item: NavItem }) {
 /** Organisation branding (spec §7.2): logo when the organization has one, mark otherwise. */
 function OrganizationMark({ inline = false }: { inline?: boolean }) {
   const { me } = useAuth();
-  const [logo, setLogo] = useState<string | null>(null);
-  useEffect(() => {
-    if (!me?.organization_id) return;
-    let url: string | undefined;
-    let cancelled = false;
-    void api.blobUrl(`/organizations/${me.organization_id}/logo`)
-      .then((result) => { url = result.url; if (!cancelled) setLogo(result.url); })
-      .catch(() => undefined); // no logo uploaded: the Governix mark is shown instead
-    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
-  }, [me?.organization_id]);
+  // The same cached query AppLayout reads the brand from.
+  const { data: organization } = useQuery({
+    queryKey: ["my-organization"],
+    queryFn: () => api.get<Organization>("/organizations/me"),
+    enabled: Boolean(me?.organization_id),
+    staleTime: 5 * 60_000,
+  });
+  const logo = me?.organization_id ? organization?.logo_url : null;
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [logo]);
   return (
     <div className={cn("flex items-center gap-2.5", inline ? "" : "px-5 py-5 pr-10 lg:pr-5")}>
-      {logo
-        ? <img src={logo} alt="" className="size-8 rounded object-contain" />
+      {logo && !failed
+        ? <img src={logo} alt="" onError={() => setFailed(true)} className="size-8 rounded object-contain" />
         : <ShieldCheck className="size-7 shrink-0 text-brand-600" />}
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold tracking-wide text-ink">Governix</p>

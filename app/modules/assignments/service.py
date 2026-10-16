@@ -92,6 +92,7 @@ class AssignmentService:
     def _manageable_users(self, principal: Principal):
         query = select(User).where(
             User.organization_id == tenant_id(principal), User.role == Role.DEPARTMENT_USER,
+            User.deleted_at.is_(None),
         )
         if principal.role is Role.BRANCH_MANAGER:
             query = query.where(User.branch_id == principal.branch_id)

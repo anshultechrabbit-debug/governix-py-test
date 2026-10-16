@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
@@ -15,6 +15,8 @@ from app.infrastructure.storage.base import Storage
 from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.organizations.schema import (
+    DeletionPreview,
+    DeletionResult,
     OrganizationCreate,
     OrganizationOptions,
     OrganizationRead,
@@ -76,6 +78,21 @@ def update_organization(
     organization_id: uuid.UUID, body: OrganizationUpdate, principal: MasterAdmin, service: Service
 ):
     return ok(organization_read(service.update(principal, organization_id, body)))
+
+
+@router.get("/{organization_id}/delete-preview", response_model=ApiResponse[DeletionPreview])
+def organization_deletion_preview(organization_id: uuid.UUID, principal: MasterAdmin, service: Service):
+    """What deleting the organisation would also delete: its branches, departments, users and policies."""
+    return ok(service.deletion_preview(organization_id))
+
+
+@router.delete("/{organization_id}", response_model=ApiResponse[DeletionResult])
+def delete_organization(
+    organization_id: uuid.UUID, principal: MasterAdmin, service: Service, confirm: Annotated[bool, Query()] = False,
+):
+    """Soft-delete the organisation and everything in it. Without confirm=true: 409
+    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes."""
+    return ok(service.delete(principal, organization_id, confirm=confirm))
 
 
 @router.post("/{organization_id}/logo", response_model=ApiResponse[OrganizationRead])

@@ -11,7 +11,8 @@ class OrganizationRepository:
         self.session = session
 
     def get(self, organization_id: uuid.UUID) -> Organization | None:
-        return self.session.get(Organization, organization_id)
+        organization = self.session.get(Organization, organization_id)
+        return organization if organization is not None and organization.deleted_at is None else None
 
     def by_port(self, port: int) -> Organization | None:
         return self.session.scalar(select(Organization).where(Organization.allowed_port == port))
@@ -22,9 +23,10 @@ class OrganizationRepository:
         ))
 
     def list(self, *, limit: int, offset: int) -> tuple[list[Organization], int]:
-        total = self.session.scalar(select(func.count()).select_from(Organization))
+        live = Organization.deleted_at.is_(None)
+        total = self.session.scalar(select(func.count()).select_from(Organization).where(live))
         items = self.session.scalars(
-            select(Organization).order_by(Organization.name).limit(limit).offset(offset)
+            select(Organization).where(live).order_by(Organization.name).limit(limit).offset(offset)
         ).all()
         return list(items), total or 0
 

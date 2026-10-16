@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -11,6 +11,7 @@ from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.departments.schema import DepartmentCreate, DepartmentRead, DepartmentUpdate
 from app.modules.departments.service import DepartmentService
+from app.modules.organizations.schema import DeletionPreview, DeletionResult
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
@@ -50,3 +51,18 @@ def update_department(
     department_id: uuid.UUID, body: DepartmentUpdate, principal: DepartmentAdmin, service: Service
 ):
     return ok(DepartmentRead.model_validate(service.update(principal, department_id, body)))
+
+
+@router.get("/{department_id}/delete-preview", response_model=ApiResponse[DeletionPreview])
+def department_deletion_preview(department_id: uuid.UUID, principal: DepartmentAdmin, service: Service):
+    """What deleting the department would also delete: its users and policies."""
+    return ok(service.deletion_preview(principal, department_id))
+
+
+@router.delete("/{department_id}", response_model=ApiResponse[DeletionResult])
+def delete_department(
+    department_id: uuid.UUID, principal: DepartmentAdmin, service: Service, confirm: Annotated[bool, Query()] = False,
+):
+    """Soft-delete the department and its users. Without confirm=true: 409
+    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes."""
+    return ok(service.delete(principal, department_id, confirm=confirm))

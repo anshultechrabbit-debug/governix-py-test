@@ -11,10 +11,13 @@ from app.infrastructure.storage.base import Storage
 from app.modules.audit.service import record_event
 from app.modules.auth.permissions import Principal, Role
 from app.modules.categories.defaults import seed_default_categories
+from app.modules.organizations import hierarchy
 from app.modules.organizations.model import Organization
 from app.modules.organizations.repository import OrganizationRepository
 from app.modules.organizations.schema import (
     BRAND_FONTS,
+    DeletionPreview,
+    DeletionResult,
     OrganizationCreate,
     OrganizationOptions,
     OrganizationUpdate,
@@ -151,3 +154,10 @@ class OrganizationService:
         with translate_unique_violation(self.session, "Another organization already uses this port.", code="PORT_TAKEN"):
             self.session.commit()
         return organization
+
+    def deletion_preview(self, organization_id: uuid.UUID) -> DeletionPreview:
+        return hierarchy.preview(self.session, hierarchy.Target(self.get(organization_id)))
+
+    def delete(self, principal: Principal, organization_id: uuid.UUID, *, confirm: bool) -> DeletionResult:
+        """Soft-delete the organisation with its branches, departments and users (see hierarchy.py)."""
+        return hierarchy.delete(self.session, principal, hierarchy.Target(self.get(organization_id)), confirm=confirm)

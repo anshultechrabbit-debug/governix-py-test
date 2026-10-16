@@ -1,13 +1,17 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request, Response
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.core.database import get_db
 from app.core.dependencies import get_app_settings
 from app.core.exceptions import AuthenticationError
+from app.core.rate_limit import RateLimiter
 from app.core.responses import ApiResponse, error_response, ok
+from app.infrastructure.mail.smtp import send_email
 from app.modules.auth.cookies import (
     CSRF_COOKIE,
     REFRESH_COOKIE,
@@ -17,7 +21,15 @@ from app.modules.auth.cookies import (
     set_auth_cookies,
 )
 from app.modules.auth.dependencies import CurrentPrincipal
-from app.modules.auth.schema import AuthSession, ChangePasswordRequest, LoginRequest, Me
+from app.modules.auth.schema import (
+    AuthSession,
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    LoginRequest,
+    Me,
+    Message,
+    ResetPasswordRequest,
+)
 from app.modules.auth.service import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -32,6 +44,12 @@ def get_auth_service(
 
 Service = Annotated[AuthService, Depends(get_auth_service)]
 AppSettings = Annotated[Settings, Depends(get_app_settings)]
+
+# Forgot password sends email to whoever is named, so it is limited per address and per client.
+_RESET_LIMIT = "Too many password reset requests. Please wait a few minutes and try again."
+_reset_by_email = RateLimiter(3, 15 * 60, message=_RESET_LIMIT)
+_reset_by_client = RateLimiter(10, 15 * 60, message=_RESET_LIMIT)
+RESET_SENT = "If an account uses that email, we have sent it a link to reset the password."
 
 
 @router.post("/login", response_model=ApiResponse[AuthSession])
@@ -88,3 +106,38 @@ def change_password(
     service.change_password(principal, body.current_password, body.new_password)
     clear_auth_cookies(response, request, settings)  # every session has just ended, this one too
     return ok({})
+
+
+@router.post("/forgot-password", response_model=ApiResponse[Message])
+def forgot_password(
+    body: ForgotPasswordRequest, request: Request, background: BackgroundTasks, service: Service,
+    settings: AppSettings,
+):
+    """Email a single-use reset link. The answer is the same whether or not the email is registered."""
+    _reset_by_client.check(request.client.host if request.client else "unknown")
+    _reset_by_email.check(body.email.lower())
+    issued = service.forgot_password(body.email)
+    if issued is not None:
+        user, token = issued
+        link = f"{settings.PASSWORD_RESET_URL}?{urlencode({'token': token})}"
+        background.add_task(
+            send_email, settings, to=user.email, subject=f"Reset your {settings.APP_NAME} password",
+            body=(
+                f"Hello {user.full_name},\n\n"
+                f"We received a request to reset your {settings.APP_NAME} password. Open this link within "
+                f"{settings.PASSWORD_RESET_TTL_MINUTES} minutes to choose a new one:\n\n{link}\n\n"
+                "The link works once. If you did not ask for this, ignore this email: your password stays"
+                " the same.\n"
+            ),
+        )
+    return ok(Message(message=RESET_SENT))
+
+
+@router.post("/reset-password", response_model=ApiResponse[Message])
+def reset_password(
+    body: ResetPasswordRequest, request: Request, response: Response, service: Service, settings: AppSettings,
+):
+    """Set a new password from a reset link. Every session ends; the user signs in with the new password."""
+    service.reset_password(body.token, body.new_password)
+    clear_auth_cookies(response, request, settings)
+    return ok(Message(message="Your password has been reset. Sign in with your new password."))
