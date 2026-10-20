@@ -1,0 +1,33 @@
+# Secrets: keep the *.example templates only
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Frontend
+frontend/node_modules/
+frontend/tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Uploaded files and other runtime data (originals, branding, ticket attachments)
+/storage/
+
+# Test and suite output
+suite_results.txt
+*.log
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
