@@ -46,6 +46,14 @@ server {{
 
     client_max_body_size {max_body}m;
 
+    # Compress the app and JSON. text/event-stream is left out: compressing it would hold back streamed answers.
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
     # The browser calls /api/...; FastAPI serves the same paths without the prefix.
     location /api/ {{
         proxy_pass {upstream}/;
@@ -61,9 +69,21 @@ server {{
         proxy_send_timeout 300s;
     }}
 
+    # Built files carry a content hash in their names, so a browser may keep them for good.
+    location /assets/ {{
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }}
+
     # Single-page app: any other path loads index.html.
     location / {{
         try_files $uri $uri/ /index.html;
+    }}
+
+    # Always checked again, so a redeploy's new file names are picked up at once.
+    location = /index.html {{
+        add_header Cache-Control "no-cache";
     }}
 }}
 """

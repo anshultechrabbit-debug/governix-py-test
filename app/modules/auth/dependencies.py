@@ -66,11 +66,15 @@ def get_current_principal(
 
     # Always re-read the user: deactivation, role changes and suspended
     # organisations take effect immediately, not when the token expires.
-    user = db.get(User, user_id)
+    # One round trip for both, since this runs on every request.
+    row = db.execute(
+        select(User, Organization).outerjoin(Organization, Organization.id == User.organization_id)
+        .where(User.id == user_id)
+    ).first()
+    user, organization = row if row is not None else (None, None)
     if user is None or not user.is_active or user.token_version != claims.get("tv"):
         raise AuthenticationError("Session is no longer valid.", code="INVALID_TOKEN")
     if user.organization_id is not None:
-        organization = db.get(Organization, user.organization_id)
         if (
             organization is None or organization.deleted_at is not None
             or organization.status != OrganizationStatus.ACTIVE
