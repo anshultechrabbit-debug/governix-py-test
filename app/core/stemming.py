@@ -12,6 +12,7 @@ of variation that actually appears between a question and its source text.
 """
 
 import re
+from functools import lru_cache
 
 _PLURAL_RULES = (
     ("sses", "ss"),
@@ -91,6 +92,8 @@ IRREGULAR = {
 MIN_STEM_LENGTH = 3
 
 
+# Pure, and every passage is stemmed word by word, mostly the same few thousand words.
+@lru_cache(maxsize=65_536)
 def stem(word: str) -> str:
     """Reduce `word` to an inflection-insensitive form, lower-cased."""
     word = word.lower().strip(".'\u2019")

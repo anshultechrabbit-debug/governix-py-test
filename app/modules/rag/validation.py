@@ -300,6 +300,10 @@ class TermIndex:
             for part in parts
         )
 
+    def mentions_all(self, terms) -> bool:
+        """Every term is mentioned. Build the index once and ask this, not one index per term."""
+        return all(self.mentions(term) for term in terms)
+
     @property
     def initials(self) -> set[str]:
         if self._initials is None:
@@ -345,11 +349,11 @@ def _unsupported_versions(
         # "Capital Adequacy appears in both versions": each version's cited passage must have it.
         for version in sorted(cited_versions):
             own = [e for e in cited_passages if normal_label(version) in {normal_label(v) for v in e.versions}]
-            if own and not any(all(TermIndex(e.text).mentions(w) for w in subject) for e in own):
+            if own and not any(TermIndex(e.text).mentions_all(subject) for e in own):
                 return f"says every version has it, but the version {version} passage does not"
     for version, label in lacking.items():
         passages = [e for e in evidence.values() if version in {normal_label(v) for v in e.versions} and len(e.versions) == 1]
-        if subject and (found := next((e for e in passages if all(TermIndex(e.text).mentions(w) for w in subject)), None)):
+        if subject and (found := next((e for e in passages if TermIndex(e.text).mentions_all(subject)), None)):
             return f"says version {label} lacks it, but {found.id} (version {label}) has it"
     return None
 

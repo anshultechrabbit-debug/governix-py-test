@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 
 from app.modules.ingestion.analysis.dates import DATE_FRAGMENT, parse_date
 from app.modules.ingestion.text import sentence_bounds
@@ -78,6 +79,13 @@ def _canonical(value: Decimal) -> str:
 
 def extract_numeric_facts(text: str, date_order: str = "DMY") -> list[NumericFact]:
     """All numeric facts, most specific interpretation first; spans never overlap."""
+    # A fresh list each time, so a caller that changes it never changes the cached facts.
+    return list(_numeric_facts(text, date_order))
+
+
+# Validation reads the same cited passages for every claim; the facts are frozen and depend only on the text.
+@lru_cache(maxsize=1024)
+def _numeric_facts(text: str, date_order: str) -> tuple[NumericFact, ...]:
     taken: list[tuple[int, int]] = []
     facts: list[NumericFact] = []
     # Scans set figures off with hyphens ("a minimum period of -7- days"); blank them out
@@ -98,7 +106,7 @@ def extract_numeric_facts(text: str, date_order: str = "DMY") -> list[NumericFac
             taken.append((start, end))
             facts.append(NumericFact(kind, value, match.group(0).strip(), start, end))
     facts.sort(key=lambda f: f.start)
-    return facts
+    return tuple(facts)
 
 
 def _normalize(kind: str, match: re.Match, date_order: str) -> str | None:

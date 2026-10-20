@@ -2722,7 +2722,7 @@ def _rules_matching(evidence: EvidenceSet, question: str) -> dict[tuple, dict[st
         for rule in _RULE_BREAK.split(item.candidate.text):
             rule = " ".join(rule.split())
             figures = tuple(sorted(f.value for f in extract_numeric_facts(rule) if f.kind != "date"))
-            if not figures or not all(TermIndex(rule).mentions(t) for t in terms):
+            if not figures or not TermIndex(rule).mentions_all(terms):
                 continue
             clause = (m.group(1) if (m := _CLAUSE_START.match(rule)) else None) or f"page {item.source.page_start}"
             found.setdefault(group, {}).setdefault(clause, (figures, rule, item.source.page_start))
@@ -2806,7 +2806,7 @@ def _focused(evidence: EvidenceSet, question: str) -> EvidenceSet | None:
     terms = [t for t in key_terms(question) if not t.isdigit()]
     if not terms:
         return None
-    items = [i for i in evidence.items if all(TermIndex(i.full_text).mentions(t) for t in terms)]
+    items = [i for i in evidence.items if TermIndex(i.full_text).mentions_all(terms)]
     if not items or len(items) == len(evidence.items):
         return None
     kept = {i.id for i in items}
