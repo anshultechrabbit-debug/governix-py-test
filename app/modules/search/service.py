@@ -82,14 +82,14 @@ def retrieve_with_variants(principal, retriever, embedder, cache, query, filters
     if len(jobs) == 1:
         return retriever.retrieve(
             principal, jobs[0][0], filters, limit=limit,
-            query_vector=embed_query_cached(embedder, cache, jobs[0][0]),
+            embed=lambda: embed_query_cached(embedder, cache, jobs[0][0]),
         )
     # Variants run concurrently on the shared lane pool. Running them in series
     # tripled wall-clock latency for a recall gain that does not need it.
     def run(variant, scope, semantic):
-        # Embedded inside the worker, so the variants' embedding round trips overlap too.
-        vector = embed_query_cached(embedder, cache, variant) if semantic else None
-        return retriever.retrieve(principal, variant, scope, limit=limit, semantic=semantic, query_vector=vector)
+        # Embedded inside retrieve(), so each variant's embedding round trip overlaps its term statistics.
+        return retriever.retrieve(principal, variant, scope, limit=limit, semantic=semantic,
+                                  embed=lambda: embed_query_cached(embedder, cache, variant))
 
     with ThreadPoolExecutor(max_workers=min(len(jobs), VARIANT_POOL_SIZE + MAX_REPHRASINGS)) as pool:
         futures = [pool.submit(run, variant, scope, semantic) for variant, scope, semantic in jobs]

@@ -71,8 +71,10 @@ from app.modules.rag.select import (
     premise_claim, selection_prompt, selection_schema, verification_prompt,
 )
 from app.modules.rag.query_rewrite import (
-    HISTORY_TURNS, Rewrite, depends_on_history, from_form, question_lines, restated_questions, standalone_question,
+    CLARIFY_PROMPT, HISTORY_TURNS, Rewrite, depends_on_history, from_form, question_lines, restated_questions,
+    standalone_question,
 )
+from app.modules.rag.query_rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from app.modules.rag.schema import AnswerResponse, AskRequest, Claim, NoAnswer, Source
 from app.modules.rag.validation import ABSENCE_PROBLEM, EvidenceText, TermIndex, validate_claims
 from app.modules.search.model import Chunk
@@ -81,12 +83,24 @@ from app.modules.search.retrieval import (
 )
 from app.modules.search.policy_names import without_references
 from app.modules.search.schema import Provenance
-from app.modules.search.rephrase import rephraser
+from app.modules.search.rephrase import PROMPT as REPHRASE_PROMPT, rephraser
 from app.modules.search.service import cache_scope, embed_query_cached, provenance, retrieve_with_variants
 from app.modules.versions.integrity import newer_versions, unrelated_versions
 from app.modules.versions.timeline import compare_versions, effective_on
 
 logger = logging.getLogger(__name__)
+
+# Model calls are named in the audit trail by the prompt they use (matched on its opening words).
+_CALL_NAMES = [
+    (SYSTEM_PROMPT, "answer"), (SELECT_PROMPT, "select"), (VERIFY_PROMPT, "verify_pick"),
+    (MEANING_CHECK_PROMPT, "meaning_check"), (REASONING_CHECK_PROMPT, "reasoning_check"),
+    (SUMMARY_CHECK_PROMPT, "summary_check"), (COMPUTE_PROMPT, "compute"), (TRANSLATE_PROMPT, "translate"),
+    (REWRITE_PROMPT, "rewrite"), (CLARIFY_PROMPT, "clarify"), (REPHRASE_PROMPT, "rephrase"),
+]
+
+
+def _call_name(system: str) -> str:
+    return next((name for prompt, name in _CALL_NAMES if system.startswith(prompt[:80])), "other")
 
 # When nothing came close enough to suggest a question about it (see _explain_not_found).
 SUGGESTIONS = [
@@ -526,7 +540,11 @@ class RAGService:
         self.reranker: RerankerProvider | None = reranker
         # Every model call of an answer ends by its time limit (see _calls_end), retries included.
         self._calls_end: float | None = None
-        self._llm_factory: Callable[[], LLMProvider] = lambda: TimedLLM(llm_factory(), lambda: self._calls_end)
+        # Each call's name and time, kept in the audit trail to show where an answer's time goes.
+        self._model_calls: list[dict[str, Any]] = []
+        self._llm_factory: Callable[[], LLMProvider] = lambda: TimedLLM(
+            llm_factory(), lambda: self._calls_end,
+            lambda system, ms: self._model_calls.append({"call": _call_name(system), "ms": ms}))
         self._rephrase = rephraser(self._llm_factory)
         self._session_factory = session_factory
         self.retriever = HybridRetriever(session_factory, embedder)
@@ -2460,6 +2478,8 @@ class RAGService:
                 "model": response.model,
                 "usage": response.usage,
                 "latency_ms": response.timings_ms.get("total"),
+                "timings_ms": response.timings_ms,
+                "model_calls": self._model_calls,
                 "cache_hit": cache_hit,
                 "permission_scope": principal.permission_scope,
                 "asked_at": datetime.now(UTC).isoformat(),

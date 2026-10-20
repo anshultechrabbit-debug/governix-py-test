@@ -25,6 +25,7 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
@@ -870,8 +871,10 @@ class HybridRetriever:
         limit: int = 60,
         query_vector: list[float] | None = None,
         semantic: bool = True,
+        embed: Callable[[], list[float] | None] | None = None,
     ) -> RetrievalResult:
-        """`semantic=False` runs only the lexical lanes (no query embedding, no vector lane)."""
+        """`semantic=False` runs only the lexical lanes (no query embedding, no vector lane).
+        `embed` gives the query vector (e.g. from a cache) when `query_vector` is not passed."""
         timings: dict[str, float] = {}
 
         def timed(name, fn, *args):
@@ -881,16 +884,23 @@ class HybridRetriever:
             finally:
                 timings[name] = round((time.perf_counter() - started) * 1000, 1)
 
-        referenced = timed("policy_lookup", self.referenced_policies, principal, query)
-        if not semantic:
-            query_vector = None
-        elif query_vector is None and self.embedder is not None:
-            # Embed before fanning out: the network round trip is the longest
-            # step and there is nothing for it to overlap with.
-            query_vector = timed("embed_query", self.embedder.query_vector, query)
         # One shared pool for the whole process, not one per call: a pool per
         # retrieve() multiplied threads by (lanes x query variants) per question.
         pool = lane_pool()
+        # The term statistics the keyword and section lanes both need, read once and while the query is
+        # embedded: on a cold cache they are most of the lexical lanes' time.
+        statistics = pool.submit(timed, "term_statistics", self.selective_terms, principal, search_terms(query))
+        referenced = timed("policy_lookup", self.referenced_policies, principal, query)
+        if not semantic:
+            query_vector = None
+        elif query_vector is None and embed is not None:
+            query_vector = timed("embed_query", embed)
+        elif query_vector is None and self.embedder is not None:
+            query_vector = timed("embed_query", self.embedder.query_vector, query)
+        try:
+            statistics.result()
+        except Exception:
+            logger.warning("Term statistics failed; the lanes read them themselves", exc_info=True)
         jobs = {
             "keyword": (timed, "keyword", self._keyword, principal, query, filters),
             "section": (timed, "section", self._section, principal, query, filters),

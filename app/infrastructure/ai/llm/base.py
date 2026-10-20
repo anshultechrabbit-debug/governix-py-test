@@ -1,4 +1,5 @@
 import json
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterator
 from contextvars import ContextVar
@@ -55,33 +56,47 @@ class TimedLLM(LLMProvider):
     The provider is shared by all requests, so the limit cannot be stored on it; it is set around
     each call instead, and only for that call."""
 
-    def __init__(self, llm: LLMProvider, ends_at: Callable[[], float | None]) -> None:
+    def __init__(self, llm: LLMProvider, ends_at: Callable[[], float | None],
+                 on_call: Callable[[str, float], None] | None = None) -> None:
         self._llm = llm
         self._ends_at = ends_at
+        # Told each call's system prompt and wall time in ms, for the audit trail.
+        self._on_call = on_call
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._llm, name)
 
     def generate_json(self, system: str, user: str, schema: dict[str, Any], *, context: dict[str, Any] | None = None) -> LLMResult:
         token = CALL_ENDS_AT.set(self._ends_at())
+        started = time.perf_counter()
         try:
             return self._llm.generate_json(system, user, schema, context=context)
         finally:
             CALL_ENDS_AT.reset(token)
+            self._report(system, started)
 
     def stream_json(
         self, system: str, user: str, schema: dict[str, Any], *, context: dict[str, Any] | None = None
     ) -> Iterator["str | LLMResult"]:
         stream = self._llm.stream_json(system, user, schema, context=context)
         ends_at = self._ends_at()
-        while True:
-            # A generator's steps may each run in another context (a server's thread pool): set the
-            # limit around every step, not once.
-            token = CALL_ENDS_AT.set(ends_at)
-            try:
-                part = next(stream)
-            except StopIteration:
-                return
-            finally:
-                CALL_ENDS_AT.reset(token)
-            yield part
+        started = time.perf_counter()
+        try:
+            while True:
+                # A generator's steps may each run in another context (a server's thread pool): set the
+                # limit around every step, not once.
+                token = CALL_ENDS_AT.set(ends_at)
+                try:
+                    part = next(stream)
+                except StopIteration:
+                    return
+                finally:
+                    CALL_ENDS_AT.reset(token)
+                yield part
+        finally:
+            # From the request to the last part, including the reader's work between parts.
+            self._report(system, started)
+
+    def _report(self, system: str, started: float) -> None:
+        if self._on_call is not None:
+            self._on_call(system, round((time.perf_counter() - started) * 1000, 1))
