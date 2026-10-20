@@ -67,7 +67,16 @@ export async function sha256(file: File): Promise<string | null> {
 }
 
 function update(jobId: string, key: string, patch: Partial<QueueItem>) {
+  // Polls repeat the same values every cycle: skip the dispatch (and the re-render) when nothing changed.
+  const item = currentItem(jobId, key);
+  if (item && (Object.keys(patch) as (keyof QueueItem)[]).every((field) => sameValue(item[field], patch[field]))) return;
   store.dispatch(itemUpdated({ jobId, key, patch }));
+}
+
+function sameValue(a: unknown, b: unknown) {
+  if (a === b) return true;
+  // Stage rows arrive as new arrays on every poll.
+  return Array.isArray(a) && Array.isArray(b) && JSON.stringify(a) === JSON.stringify(b);
 }
 
 function currentItem(jobId: string, key: string) {
@@ -196,9 +205,16 @@ async function readStages(documentId: string): Promise<QueueStage[] | null> {
   }
 }
 
+/** Every stage completed or skipped: the rows will not change again (only a retry of a failed stage resets them). */
+const stagesDone = (stages: QueueStage[]) =>
+  stages.length > 0 && stages.every((s) => s.status === "completed" || s.status === "skipped");
+
 async function follow(jobId: string, batchId: string, keys: Map<string, string>) {
   let errors = 0;
   let last: UploadBatch | null = null;
+  // Documents whose stages are final are not asked again, so a large batch does not keep
+  // sending one progress request per finished file every cycle.
+  const settled = new Set<string>();
   for (;;) {
     await new Promise((resolve) => setTimeout(resolve, POLL_MS));
     let batch: UploadBatch;
@@ -215,10 +231,13 @@ async function follow(jobId: string, batchId: string, keys: Map<string, string>)
       const state = SERVER_STATES[item.status];
       if (key && state) update(jobId, key, { state, message: item.message, documentId: item.document_id });
       // Real per-stage progress (reading, chunking, embedding) from the same poll cycle.
-      if (key && item.document_id && (state === "processing" || state === "registered")) {
+      const documentId = item.document_id;
+      if (key && documentId && !settled.has(documentId) && (state === "processing" || state === "registered")) {
         working.push(
-          readStages(item.document_id).then((stages) => {
-            if (stages) update(jobId, key, { stages });
+          readStages(documentId).then((stages) => {
+            if (!stages) return;
+            update(jobId, key, { stages });
+            if (stagesDone(stages)) settled.add(documentId);
           }),
         );
       }

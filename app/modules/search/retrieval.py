@@ -416,29 +416,27 @@ class HybridRetriever:
         queries). This collapses them into a single batched statement so the
         salient-coverage gate does not add N×RTT to the critical path.
 
-        Stop words (terms the FTS index never stores) are pre-checked with a
-        single `numnode` call per term on a shared connection so they are still
-        tagged as NOT_INDEXED without firing a count query for them.
+        Stop words (terms the FTS index never stores) are pre-checked with one
+        `numnode` statement for all terms so they are still tagged as
+        NOT_INDEXED without firing a count query for them.
         """
         parts: list[str] = []
         params: dict[str, object] = {}
-        # Collect the ACL-filtered chunk ids once; every term counts against the same base.
-        acl_clause = visible_clause(
-            principal, Chunk.organization_id, Chunk.branch_id, Chunk.department_id, Chunk.policy_id
-        )
         try:
             with self._session() as session:
                 # Pre-screen stop words: plainto_tsquery("english", <stop word>) has numnode=0.
+                words = [term for term in terms if term != "__total__"]
+                nodes = dict(session.execute(
+                    text("select t, numnode(plainto_tsquery('english', t)) from unnest(cast(:words as text[])) as t"),
+                    {"words": words},
+                ).all()) if words else {}
                 stop: set[str] = set()
                 content_terms: list[str] = []
                 for term in terms:
-                    if term == "__total__":
+                    if term == "__total__" or nodes.get(term):
                         content_terms.append(term)
-                        continue
-                    if not session.scalar(select(func.numnode(func.plainto_tsquery("english", term)))):
-                        stop.add(term)
                     else:
-                        content_terms.append(term)
+                        stop.add(term)
 
                 if not content_terms:
                     return {t: NOT_INDEXED for t in stop}

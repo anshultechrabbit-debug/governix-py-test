@@ -1,32 +1,38 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { lazy, useEffect, useRef, type ComponentType, type ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router";
 import { Spinner, Toaster } from "./components/ui";
 import { AppLayout } from "./components/layout/AppLayout";
-import { AdminUsersPage } from "./pages/AdminUsersPage";
-import { AssignDocumentsPage } from "./pages/AssignDocumentsPage";
-import { AssistantPage } from "./pages/AssistantPage";
-import { BranchesPage } from "./pages/BranchesPage";
-import { DashboardPage } from "./pages/DashboardPage";
-import { DocumentDetailPage } from "./pages/DocumentDetailPage";
-import { DocumentsPage } from "./pages/DocumentsPage";
-import { DocumentViewerPage } from "./pages/DocumentViewerPage";
 import { LoginPage } from "./pages/LoginPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
-import { NginxPage } from "./pages/NginxPage";
 import { ForgotPasswordPage, ResetPasswordPage } from "./pages/PasswordResetPages";
-import { NotificationsPage } from "./pages/NotificationsPage";
-import { OrganizationsPage } from "./pages/OrganizationsPage";
-import { ComparePage } from "./pages/ComparePage";
-import { ComplaintsPage } from "./pages/ComplaintsPage";
-import { PoliciesPage } from "./pages/PoliciesPage";
-import { PolicyDetailPage } from "./pages/PolicyDetailPage";
-import { SupportPage } from "./pages/SupportPage";
-import { TicketPage } from "./pages/TicketPage";
-import { UploadBatchesPage, UploadBatchPage } from "./pages/UploadBatchPage";
-import { UploadPage } from "./pages/UploadPage";
-import { UsersPage } from "./pages/UsersPage";
 import { restoreSession } from "./store/authSlice";
 import { useAppDispatch, useAuth } from "./store/hooks";
+
+// Each page is its own chunk, fetched the first time it is opened, so sign-in does not wait for the whole app.
+function page<M, K extends keyof M>(load: () => Promise<M>, name: K) {
+  return lazy(async () => ({ default: (await load())[name] as ComponentType }));
+}
+const AdminUsersPage = page(() => import("./pages/AdminUsersPage"), "AdminUsersPage");
+const AssignDocumentsPage = page(() => import("./pages/AssignDocumentsPage"), "AssignDocumentsPage");
+const AssistantPage = page(() => import("./pages/AssistantPage"), "AssistantPage");
+const BranchesPage = page(() => import("./pages/BranchesPage"), "BranchesPage");
+const ComparePage = page(() => import("./pages/ComparePage"), "ComparePage");
+const ComplaintsPage = page(() => import("./pages/ComplaintsPage"), "ComplaintsPage");
+const DashboardPage = page(() => import("./pages/DashboardPage"), "DashboardPage");
+const DocumentDetailPage = page(() => import("./pages/DocumentDetailPage"), "DocumentDetailPage");
+const DocumentViewerPage = page(() => import("./pages/DocumentViewerPage"), "DocumentViewerPage");
+const DocumentsPage = page(() => import("./pages/DocumentsPage"), "DocumentsPage");
+const NginxPage = page(() => import("./pages/NginxPage"), "NginxPage");
+const NotificationsPage = page(() => import("./pages/NotificationsPage"), "NotificationsPage");
+const OrganizationsPage = page(() => import("./pages/OrganizationsPage"), "OrganizationsPage");
+const PoliciesPage = page(() => import("./pages/PoliciesPage"), "PoliciesPage");
+const PolicyDetailPage = page(() => import("./pages/PolicyDetailPage"), "PolicyDetailPage");
+const SupportPage = page(() => import("./pages/SupportPage"), "SupportPage");
+const TicketPage = page(() => import("./pages/TicketPage"), "TicketPage");
+const UploadBatchPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchPage");
+const UploadBatchesPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchesPage");
+const UploadPage = page(() => import("./pages/UploadPage"), "UploadPage");
+const UsersPage = page(() => import("./pages/UsersPage"), "UsersPage");
 
 function Guard({ permission, children }: { permission: string; children: ReactNode }) {
   const { can } = useAuth();

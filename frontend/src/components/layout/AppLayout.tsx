@@ -4,7 +4,7 @@ import {
   ScrollText, ShieldCheck, Sparkles, Upload, UserCog, Users, X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type ComponentType } from "react";
+import { Suspense, useEffect, useState, type ComponentType } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import { api } from "../../api/client";
 import type { Me, Organization } from "../../api/types";
@@ -12,6 +12,7 @@ import { applyBrand, sidebarPalette } from "../../lib/brand";
 import { cn } from "../../lib/format";
 import { useAuth } from "../../store/hooks";
 import { UploadActivity, UploadJobModal } from "../BulkUpload";
+import { Spinner } from "../ui";
 import { NotificationBell } from "../Notifications";
 import { UserMenu } from "./UserMenu";
 
@@ -172,7 +173,10 @@ export function AppLayout() {
           <UserMenu placement="top" />
         </header>
         <main className="min-w-0 flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
-          <Outlet />
+          {/* Pages load on first visit; the sidebar and header stay put meanwhile. */}
+          <Suspense fallback={<div className="flex justify-center py-16"><Spinner /></div>}>
+            <Outlet />
+          </Suspense>
         </main>
       </div>
       {/* The live upload queue follows the person across every page (spec §7–8). */}
