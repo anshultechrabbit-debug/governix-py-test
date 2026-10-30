@@ -418,6 +418,11 @@ export interface OrganizationOptions {
 export interface AuditEvent {
   id: UUID; organization_id: UUID | null; actor_user_id: UUID | null; action: string; resource_type: string | null;
   resource_id: UUID | null; request_id: string | null; details: Record<string, any>; created_at: string;
+  // In plain words (app/modules/audit/describe.py): who, where, what, and one sentence saying what happened.
+  actor_name: string | null; actor_email: string | null; actor_role: string | null;
+  organization_name: string | null; resource_name: string | null;
+  action_label: string; category: string; severity: "info" | "warning" | "critical";
+  summary: string; facts: { label: string; value: string }[];
 }
 export interface Dashboard {
   counts: Record<string, number>;

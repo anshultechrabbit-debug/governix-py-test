@@ -180,4 +180,4 @@ def test_master_admin_has_no_tenant_data_access(client, db):
     db.commit()
     session = login(client, master)
     assert session.get("/branches").status_code == 403
-    assert session.get("/audit-events").status_code == 403
+    assert session.get("/audit-events").status_code == 200  # the audit log is the one exception

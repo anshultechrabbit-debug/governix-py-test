@@ -11,6 +11,17 @@ class AuditRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    @staticmethod
+    def _scoped(query, organization_id: uuid.UUID | None, every_organization: bool):
+        """One organization's events (None: the platform's own), or, for the master admin, all of them."""
+        return query if every_organization else query.where(AuditEvent.organization_id == organization_id)
+
+    # Before list(): below it, "list" in this class body is that method, not the type.
+    def actions(self, organization_id: uuid.UUID | None, *, every_organization: bool = False) -> list[str]:
+        """The event types recorded in the scope, for filtering ("ai.query", "user.created", ...)."""
+        query = self._scoped(select(AuditEvent.action).distinct(), organization_id, every_organization)
+        return list(self.session.scalars(query.order_by(AuditEvent.action)).all())
+
     def list(
         self,
         organization_id: uuid.UUID | None,
@@ -22,8 +33,9 @@ class AuditRepository:
         since: datetime | None,
         limit: int,
         offset: int,
+        every_organization: bool = False,
     ) -> tuple[list[AuditEvent], int]:
-        query = select(AuditEvent).where(AuditEvent.organization_id == organization_id)
+        query = self._scoped(select(AuditEvent), organization_id, every_organization)
         if action:
             query = query.where(AuditEvent.action == action)
         if resource_type:

@@ -40,10 +40,12 @@ _TENANT_BASE = {
 
 # The master admin runs the platform; it deliberately has no access to any
 # organisation's documents or knowledge base (USERS_MANAGE is limited to
-# organization admins by ASSIGNABLE_ROLES).
+# organization admins by ASSIGNABLE_ROLES). It does read every organisation's
+# audit log (AUDIT_READ), the platform's record of who did what.
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.MASTER_ADMIN: frozenset(
-        {Permission.ORGANIZATIONS_MANAGE, Permission.SYSTEM_MONITOR, Permission.USERS_MANAGE, Permission.SUPPORT}
+        {Permission.ORGANIZATIONS_MANAGE, Permission.SYSTEM_MONITOR, Permission.USERS_MANAGE, Permission.SUPPORT,
+         Permission.AUDIT_READ}
     ),
     # The Organization Admin provisions Branch Managers and runs the knowledge base (policies,
     # uploads); it does not use the AI Assistant, which is for the branches.

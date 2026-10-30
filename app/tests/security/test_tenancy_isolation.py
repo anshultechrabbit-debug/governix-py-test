@@ -120,6 +120,24 @@ def test_org_admin_audit_log_is_tenant_scoped(client, world, db):
     events = login(client, bank_a.admin).get("/audit-events").json()["data"]["items"]
     assert all(e["organization_id"] == str(bank_a.org.id) for e in events)
     assert not any(e["action"] == "branch.created" for e in events)
+    # Asking for another organization changes nothing for an Organization Admin.
+    asked = login(client, bank_a.admin).get(f"/audit-events?organization_id={bank_b.org.id}").json()["data"]["items"]
+    assert all(e["organization_id"] == str(bank_a.org.id) for e in asked)
+
+
+def test_master_admin_reads_every_organizations_audit_log(client, world, db):
+    bank_a, bank_b = world
+    for bank, code in ((bank_a, "AAA"), (bank_b, "BBB")):
+        created = login(client, bank.admin).post("/branches", json={"name": f"Branch {code}", "code": code, **ADDRESS})
+        assert created.status_code == 201, created.text
+    master = make_user(db, Role.MASTER_ADMIN)
+    db.commit()
+    session = login(client, master)
+    every = session.get("/audit-events?action=branch.created&limit=200").json()["data"]["items"]
+    assert {str(bank_a.org.id), str(bank_b.org.id)} <= {e["organization_id"] for e in every}
+    one = session.get(f"/audit-events?organization_id={bank_b.org.id}").json()["data"]["items"]
+    assert one and all(e["organization_id"] == str(bank_b.org.id) for e in one)
+    assert "branch.created" in session.get("/audit-events/actions").json()["data"]
 
 
 def test_master_admin_creates_org_admin_only(client, db, world):

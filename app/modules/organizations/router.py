@@ -55,7 +55,7 @@ def list_organizations(
 
 
 @router.get("/options", response_model=ApiResponse[OrganizationOptions])
-def organization_options(principal: MasterAdmin, service: Service):
+def organization_options(service: Service):
     """For the create and edit forms: the port range, the ports already in use, and the brand fonts."""
     return ok(service.options())
 
