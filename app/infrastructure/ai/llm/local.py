@@ -40,6 +40,9 @@ class LocalLLM(LLMProvider):
         if context.get("task") == "change_summary":
             lines = context.get("lines", [])[:5]
             return self._result({"summary": ("Important changes: " + "; ".join(lines) + ".") if lines else ""}, started)
+        if context.get("task") == "support_triage":
+            # No model to read the ticket: its category recommends (tickets.triage).
+            return self._result({}, started)
         terms = {w for w in _WORD.findall(context.get("question", "").lower()) if w not in _STOP}
         scored = []
         for order, item in enumerate(context.get("evidence", [])):

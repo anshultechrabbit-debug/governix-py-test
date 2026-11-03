@@ -11,7 +11,7 @@ export interface Me {
   id: UUID;
   email: string;
   full_name: string;
-  role: "master_admin" | "org_admin" | "branch_manager" | "department_user";
+  role: "master_admin" | "org_admin" | "branch_manager" | "department_user" | "support_agent";
   organization_id: UUID | null;
   organization_name: string | null;
   branch_id: UUID | null;
@@ -612,24 +612,58 @@ export interface AppNotification {
 
 export interface Inbox { items: AppNotification[]; total: number; unread: number; limit: number; offset: number }
 
-/* ---------- Complaints and support ---------- */
+/* ---------- Support Center ---------- */
 
-export type TicketStatus = "open" | "in_progress" | "waiting_for_response" | "resolved" | "closed";
+export type TicketStatus =
+  | "awaiting_confirmation" | "open" | "in_progress" | "waiting_for_user" | "waiting_for_team"
+  | "resolved" | "closed" | "cancelled";
+export type TicketPriority = "low" | "medium" | "high" | "urgent";
+export type TicketTeam = "technical" | "branch";
+export type TicketLevel = "branch" | "organization" | "platform";
+export type DestinationKey = "branch" | "head_office" | "technical";
+export type CategoryRoute = "technical" | "branch" | "policy" | "auto";
+export type StaffAvailability = "available" | "busy" | "away" | "offline";
+
+export interface SupportCategory { id: string; name: string; route: CategoryRoute; description: string | null }
+export interface SupportCategoryAdmin extends SupportCategory { is_active: boolean }
+
+/** The AI recommendation the creator sees before confirming. team null: they must choose. */
+export interface Routing {
+  team: TicketTeam | null;
+  priority: TicketPriority;
+  confidence: number;
+  reason: string;
+  source: "ai" | "text" | "category" | "none";
+  /** A question about what a policy says: the AI Assistant answers it. */
+  redirect: boolean;
+  issue_type: string | null;
+  skills: string[];
+  needs_choice: boolean;
+  priority_chosen: boolean;
+  options: Partial<Record<TicketTeam, { level: TicketLevel; queue: string }>>;
+  suggested_assignee: { id: UUID; name: string } | null;
+}
 
 export interface Ticket {
   id: UUID;
+  number: number;
+  /** SUP-000123 */
+  reference: string;
   organization_id: UUID;
   organization_name: string | null;
   branch_id: UUID | null;
+  branch_name: string | null;
   kind: "complaint" | "support";
-  level: "branch" | "organization" | "platform";
+  level: TicketLevel;
+  team: TicketTeam;
+  queue_name: string;
   category: string | null;
-  /** A complaint's related policy (one the creator can read); null for a general question. */
+  issue_type: string | null;
   policy_id: UUID | null;
   policy_name: string | null;
   subject: string;
   description: string;
-  priority: "low" | "medium" | "high" | "urgent";
+  priority: TicketPriority;
   status: TicketStatus;
   created_by_id: UUID | null;
   created_by_name: string | null;
@@ -638,31 +672,118 @@ export interface Ticket {
   assigned_to_name: string | null;
   message_count: number;
   can_handle: boolean;
-  /** The handler's latest words: a reply or a resolve note. */
+  /** The support side's latest words: a reply or a resolution note. */
   last_reply_body: string | null;
   last_reply_by: string | null;
   last_reply_at: string | null;
   created_at: string;
   updated_at: string;
+  confirmed_at: string | null;
+  first_response_at: string | null;
+  response_due_at: string | null;
+  due_at: string | null;
+  overdue: boolean;
+  response_overdue: boolean;
+  resolution_note: string | null;
+  reopen_count: number;
   resolved_at: string | null;
   closed_at: string | null;
+  cancelled_at: string | null;
 }
-/** GET /tickets/stats: tickets of the box in each status. */
-export type TicketStats = Record<TicketStatus, number>;
 
-export interface TicketMessage {
+export interface TimelineEntry {
   id: UUID;
+  kind: "reply" | "note" | "status" | "forward" | "assign";
   author_id: UUID | null;
   author_name: string | null;
   author_role: Me["role"] | null;
   body: string | null;
   status_change: TicketStatus | null;
+  // forward: { from, to, reason, confirmed, escalation, initial, recommended, chosen, switched }
+  // assign: { auto, to, to_name, from, unassigned }; status: { priority: { from, to } } or { auto }
+  data: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   created_at: string;
 }
 
 export interface TicketAttachment { id: UUID; filename: string; content_type: string; size_bytes: number; uploaded_by_id: UUID | null; created_at: string }
 
-export interface TicketDetail extends Ticket { messages: TicketMessage[]; attachments: TicketAttachment[] }
+export interface Destination { key: DestinationKey; level: TicketLevel; team: TicketTeam; label: string }
+
+/** What the caller may do now (the server checks the same rules). */
+export interface TicketActions {
+  confirm: boolean;
+  reply: boolean;
+  note: boolean;
+  statuses: TicketStatus[];
+  cancel: boolean;
+  forward: Destination[];
+  escalate: boolean;
+  escalate_to: string | null;
+  take: boolean;
+  assign: boolean;
+  priority: boolean;
+  attach: boolean;
+}
+
+export interface TicketDetail extends Ticket {
+  routing: Routing | null;
+  timeline: TimelineEntry[];
+  attachments: TicketAttachment[];
+  actions: TicketActions;
+}
+
+export interface ForwardResult {
+  reference: string;
+  level: TicketLevel;
+  team: TicketTeam;
+  queue_name: string;
+  assigned_to_name: string | null;
+  /** null when the ticket left every queue the caller works or oversees. */
+  ticket: TicketDetail | null;
+}
+
+export interface QueueAssignee {
+  user_id: UUID; name: string; availability: StaffAvailability; staff_role: "agent" | "lead"; skills: string[];
+  open_tickets: number; capacity: number; load: number;
+}
+
+export interface SupportDashboard {
+  by_status: Record<TicketStatus, number>;
+  by_team: Partial<Record<TicketTeam, number>>;
+  by_priority: Record<TicketPriority, number>;
+  by_level: Partial<Record<TicketLevel, number>>;
+  by_assignee: { user_id: UUID; name: string; open_tickets: number; capacity: number | null; load: number | null }[];
+  active: number;
+  overdue: number;
+  response_overdue: number;
+  unassigned: number;
+}
+
+export interface SupportStaff {
+  id: UUID;
+  user_id: UUID;
+  full_name: string;
+  email: string;
+  role: Me["role"];
+  level: TicketLevel;
+  organization_id: UUID | null;
+  organization_name: string | null;
+  branch_id: UUID | null;
+  branch_name: string | null;
+  staff_role: "agent" | "lead";
+  skills: string[];
+  capacity: number;
+  availability: StaffAvailability;
+  is_active: boolean;
+  account_active: boolean;
+  open_tickets: number;
+  load: number;
+  serves: { id: UUID; name: string }[];
+  last_assigned_at: string | null;
+  created_at: string;
+}
+export interface SupportStaffCreated extends SupportStaff { temporary_password: string | null }
+export interface StaffCandidate { user_id: UUID; full_name: string; email: string; role: Me["role"]; branch_name: string | null }
 
 /* ---------- Uploads ---------- */
 

@@ -37,7 +37,8 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
         Index("uq_users_email_lower", func.lower(email), unique=True, postgresql_where=sql("deleted_at IS NULL")),
         # The role determines exactly which scope columns must be set.
         CheckConstraint(
-            "(role = 'master_admin' AND organization_id IS NULL AND branch_id IS NULL AND department_id IS NULL)"
+            "(role IN ('master_admin', 'support_agent') AND organization_id IS NULL AND branch_id IS NULL"
+            " AND department_id IS NULL)"
             " OR (role = 'org_admin' AND organization_id IS NOT NULL AND branch_id IS NULL AND department_id IS NULL)"
             " OR (role = 'branch_manager' AND organization_id IS NOT NULL AND branch_id IS NOT NULL AND department_id IS NULL)"
             # A User belongs to a branch; a department is optional.

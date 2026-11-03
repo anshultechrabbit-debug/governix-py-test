@@ -20,8 +20,11 @@ class NotificationType(StrEnum):
     POLICY_EXPIRING = "POLICY_EXPIRING"
     POLICY_EXPIRED = "POLICY_EXPIRED"
     TICKET_UPDATED = "TICKET_UPDATED"
-    COMPLAINT_RESPONSE = "COMPLAINT_RESPONSE"
+    COMPLAINT_RESPONSE = "COMPLAINT_RESPONSE"  # legacy: replies to complaints raised before the Support Center
     SUPPORT_RESPONSE = "SUPPORT_RESPONSE"
+    TICKET_ASSIGNED = "TICKET_ASSIGNED"
+    TICKET_FORWARDED = "TICKET_FORWARDED"
+    TICKET_SLA = "TICKET_SLA"
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):

@@ -63,8 +63,8 @@ export function DashboardPage() {
         {can("support") && (
           <Link to="/support" className="rounded-lg border border-line bg-surface p-4 transition-colors hover:border-brand-500/40">
             <LifeBuoy className="size-5 text-brand-600" />
-            <p className="mt-2 text-sm font-semibold">{isUser ? "Complaints & Support" : "Support"}</p>
-            <p className="mt-0.5 text-xs text-muted">{isUser ? "Raise a complaint with your branch manager" : "Tickets raised to the level above you"}</p>
+            <p className="mt-2 text-sm font-semibold">Support Center</p>
+            <p className="mt-0.5 text-xs text-muted">{isUser ? "Raise a ticket: we route it to the right team" : "Your tickets and your team's queue"}</p>
           </Link>
         )}
       </div>

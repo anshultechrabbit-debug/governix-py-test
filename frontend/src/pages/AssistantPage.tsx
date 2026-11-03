@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, Bot, ChevronDown, FileWarning, History, MessagesSquare, Plus, Send, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useLocation } from "react-router";
 import { ChatHistory } from "../components/ChatHistory";
 import { useCategories } from "../components/domain";
 import { Button, Card, EmptyState, ErrorState, Field, Select, SkeletonRows, Tabs, Textarea } from "../components/ui";
@@ -35,7 +36,10 @@ export function AssistantPage() {
   }, [answered, queryClient]);
   const categories = useCategories();
   const [view, setView] = useState<View>("ask");
-  const [question, setQuestion] = useState("");
+  // A question handed over by another page (the Support Center's "Ask the AI Assistant"), placed in the box
+  // for the reader to send: never asked on their behalf.
+  const handedOver = (useLocation().state as { question?: string } | null)?.question;
+  const [question, setQuestion] = useState(handedOver ?? "");
   const [wordless, setWordless] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);

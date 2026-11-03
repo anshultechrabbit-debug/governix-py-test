@@ -17,7 +17,6 @@ const AssignDocumentsPage = page(() => import("./pages/AssignDocumentsPage"), "A
 const AssistantPage = page(() => import("./pages/AssistantPage"), "AssistantPage");
 const BranchesPage = page(() => import("./pages/BranchesPage"), "BranchesPage");
 const ComparePage = page(() => import("./pages/ComparePage"), "ComparePage");
-const ComplaintsPage = page(() => import("./pages/ComplaintsPage"), "ComplaintsPage");
 const DashboardPage = page(() => import("./pages/DashboardPage"), "DashboardPage");
 const DocumentDetailPage = page(() => import("./pages/DocumentDetailPage"), "DocumentDetailPage");
 const DocumentViewerPage = page(() => import("./pages/DocumentViewerPage"), "DocumentViewerPage");
@@ -28,6 +27,7 @@ const OrganizationsPage = page(() => import("./pages/OrganizationsPage"), "Organ
 const PoliciesPage = page(() => import("./pages/PoliciesPage"), "PoliciesPage");
 const PolicyDetailPage = page(() => import("./pages/PolicyDetailPage"), "PolicyDetailPage");
 const SupportPage = page(() => import("./pages/SupportPage"), "SupportPage");
+const SupportStaffPage = page(() => import("./pages/SupportStaffPage"), "SupportStaffPage");
 const TicketPage = page(() => import("./pages/TicketPage"), "TicketPage");
 const UploadBatchPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchPage");
 const UploadBatchesPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchesPage");
@@ -68,8 +68,10 @@ export function App() {
       </>
     );
   }
-  // The Master Admin runs the platform and never reads tenant knowledge, so it lands on Organizations.
-  const home = can("documents:read") ? <DashboardPage /> : <Navigate to="/organizations" replace />;
+  // The Master Admin runs the platform and never reads tenant knowledge, so it lands on Organizations;
+  // a Support Agent works the Support Center only.
+  const home = can("documents:read") ? <DashboardPage />
+    : <Navigate to={can("organizations:manage") ? "/organizations" : "/support"} replace />;
   return (
     <>
       <Routes>
@@ -101,8 +103,10 @@ export function App() {
 
           {/* Account */}
           <Route path="notifications" element={<NotificationsPage />} />
-          <Route path="complaints" element={<Guard permission="support"><ComplaintsPage /></Guard>} />
+          {/* Complaints and support are one Support Center now; old links land there. */}
+          <Route path="complaints" element={<Navigate to="/support" replace />} />
           <Route path="support" element={<Guard permission="support"><SupportPage /></Guard>} />
+          <Route path="support/staff" element={<Guard permission="support:staff"><SupportStaffPage /></Guard>} />
           <Route path="support/:id" element={<Guard permission="support"><TicketPage /></Guard>} />
 
           <Route path="*" element={<NotFoundPage />} />

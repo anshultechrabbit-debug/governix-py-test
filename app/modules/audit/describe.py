@@ -22,7 +22,7 @@ from app.modules.departments.model import Department
 from app.modules.documents.model import Document
 from app.modules.organizations.model import Organization
 from app.modules.policies.model import Policy, PolicyVersion
-from app.modules.tickets.model import Ticket
+from app.modules.tickets.model import SupportCategory, Ticket
 from app.modules.users.model import User
 
 ROLE_LABELS = {
@@ -30,6 +30,7 @@ ROLE_LABELS = {
     "org_admin": "Organization Admin",
     "branch_manager": "Branch Manager",
     "department_user": "User",
+    "support_agent": "Support Agent",
 }
 
 # What each kind of resource is called, and the column that names it.
@@ -41,6 +42,7 @@ _NAMED = {
     "policy": (Policy, Policy.name),
     "document": (Document, func.coalesce(Document.title, Document.original_filename)),
     "ticket": (Ticket, Ticket.subject),
+    "support_category": (SupportCategory, SupportCategory.name),
 }
 # Details keys that hold the id of a policy or a user the sentence names.
 _POLICY_KEYS = ("policy_id", "from_policy_id", "to_policy_id", "target_policy_id", "matched_policy_id")
@@ -102,8 +104,18 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "ai.query": ("Question asked", "Assistant"),
     "search.query": ("Search", "Assistant"),
     "ticket.created": ("Ticket raised", "Support"),
+    "ticket.routed": ("Ticket routing confirmed", "Support"),
     "ticket.status_changed": ("Ticket status changed", "Support"),
+    "ticket.priority_changed": ("Ticket priority changed", "Support"),
     "ticket.assigned": ("Ticket assigned", "Support"),
+    "ticket.forwarded": ("Ticket forwarded", "Support"),
+    "ticket.escalated": ("Ticket escalated", "Support"),
+    "ticket.reopened": ("Ticket reopened", "Support"),
+    "support_staff.added": ("Support staff added", "Support"),
+    "support_staff.updated": ("Support staff updated", "Support"),
+    "support_staff.removed": ("Support staff removed", "Support"),
+    "support_category.created": ("Ticket category added", "Support"),
+    "support_category.updated": ("Ticket category updated", "Support"),
 }
 _CRITICAL = frozenset({"auth.refresh_token_reuse"})
 _WARNING = frozenset({
@@ -369,10 +381,22 @@ SENTENCES: dict[str, Callable[[_Context], str]] = {
     "ai.query": _ai_query,
     "search.query": lambda c: f"{c.actor} searched for {_quote(c.d.get('query'))} and got {c.d.get('results', 0)} "
     "result(s).",
-    "ticket.created": lambda c: f"{c.actor} raised a {c.d.get('kind') or ''} ticket {c.target}.".replace("  ", " "),
+    "ticket.created": lambda c: f"{c.actor} raised the ticket {c.target}"
+    + (f" ({c.d['reference']})." if c.d.get("reference") else "."),
+    "ticket.routed": lambda c: f"{c.actor} sent the ticket {c.target} to {(c.d.get('to') or {}).get('queue', 'support')}"
+    + (" (switched from the recommendation)." if c.d.get("switched") else "."),
+    "ticket.forwarded": lambda c: f"{c.actor} forwarded the ticket {c.target} from "
+    f"{(c.d.get('from') or {}).get('queue', '?')} to {(c.d.get('to') or {}).get('queue', '?')}.",
+    "ticket.escalated": lambda c: f"{c.actor} escalated the ticket {c.target} to {(c.d.get('to') or {}).get('queue', '?')}.",
+    "ticket.reopened": lambda c: f"{c.actor} reopened the ticket {c.target}.",
+    "ticket.priority_changed": lambda c: f"{c.actor} changed the priority of {c.target} from {c.d.get('from')} "
+    f"to {c.d.get('to')}.",
+    "support_staff.added": lambda c: f"{c.actor} put {c.user('user_id')} on {c.d.get('level', '')} support duty.",
+    "support_staff.removed": lambda c: f"{c.actor} took {c.user('user_id')} off support duty.",
     "ticket.status_changed": lambda c: f"{c.actor} moved the ticket {c.target} from {c.d.get('from')} "
     f"to {c.d.get('to')}.",
-    "ticket.assigned": lambda c: f"{c.actor} assigned the ticket {c.target} to {c.user('assigned_to')}."
+    "ticket.assigned": lambda c: f"{c.actor} assigned the ticket {c.target} to {c.user('assigned_to')}"
+    + (" (automatically, by workload)." if c.d.get("auto") else ".")
     if c.d.get("assigned_to") else f"{c.actor} unassigned the ticket {c.target}.",
 }
 

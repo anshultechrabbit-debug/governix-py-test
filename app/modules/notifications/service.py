@@ -7,7 +7,7 @@
     POLICY_UPDATED           a version was scheduled, withdrawn, restored or moved
     POLICY_ASSIGNED/REMOVED  -> the User concerned
     POLICY_EXPIRING/EXPIRED  daily sweep -> assigned Users and managers
-    TICKET_UPDATED, COMPLAINT_RESPONSE, SUPPORT_RESPONSE  -> see tickets.service
+    TICKET_*, SUPPORT_RESPONSE  -> see tickets.service (Support Center) and tickets.sla
 
 Notifications are written in the caller's transaction, so an event that rolls
 back never notifies. A dedupe key makes repeated delivery (job retries, the

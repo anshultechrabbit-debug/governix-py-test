@@ -27,6 +27,7 @@ const ROLE_LABEL: Record<User["role"], string> = {
   org_admin: "Organization Admin",
   branch_manager: "Branch Manager",
   department_user: "User",
+  support_agent: "Support Agent",
 };
 const PAGE_SIZES = [5, 10, 25, 50];
 const PHONE_PATTERN = "[0-9+()\\-. ]*";
@@ -49,7 +50,7 @@ const SCOPES: Record<"master_admin" | "org_admin", Scope> = {
     title: "Users",
     subtitle: "Platform administrators and the admins of every organization.",
     place: "Organization",
-    placeOf: (user) => user.organization_name ?? (user.role === "master_admin" ? "Platform" : "—"),
+    placeOf: (user) => user.organization_name ?? (user.role === "master_admin" || user.role === "support_agent" ? "Platform" : "—"),
     emptyHint: "Add an organization admin to let a bank manage its own branches and users.",
   },
   org_admin: {

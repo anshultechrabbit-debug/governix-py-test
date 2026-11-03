@@ -9,6 +9,9 @@ class Role(StrEnum):
     ORG_ADMIN = "org_admin"
     BRANCH_MANAGER = "branch_manager"
     DEPARTMENT_USER = "department_user"
+    # Governix's own technical support staff: platform-level, no organization, and no access to any
+    # organization's documents or policies. Created by the Master Admin (Support Center > Staff).
+    SUPPORT_AGENT = "support_agent"
 
 
 class Permission(StrEnum):
@@ -28,6 +31,7 @@ class Permission(StrEnum):
     AI_QUERY = "ai:query"
     AUDIT_READ = "audit:read"
     SUPPORT = "support"  # raise and follow tickets; who handles them depends on the role
+    SUPPORT_STAFF_MANAGE = "support:staff"  # manage the support staff (and categories) of one's own level
 
 
 _TENANT_BASE = {
@@ -45,7 +49,7 @@ _TENANT_BASE = {
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     Role.MASTER_ADMIN: frozenset(
         {Permission.ORGANIZATIONS_MANAGE, Permission.SYSTEM_MONITOR, Permission.USERS_MANAGE, Permission.SUPPORT,
-         Permission.AUDIT_READ}
+         Permission.AUDIT_READ, Permission.SUPPORT_STAFF_MANAGE}
     ),
     # The Organization Admin provisions Branch Managers and runs the knowledge base (policies,
     # uploads); it does not use the AI Assistant, which is for the branches.
@@ -61,6 +65,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.DOCUMENTS_MANAGE,
             Permission.POLICIES_MANAGE,
             Permission.AUDIT_READ,
+            Permission.SUPPORT_STAFF_MANAGE,
         }
     ),
     Role.BRANCH_MANAGER: frozenset(
@@ -72,19 +77,23 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.USERS_MANAGE,
             Permission.DOCUMENTS_MANAGE,
             Permission.POLICIES_MANAGE,
+            Permission.SUPPORT_STAFF_MANAGE,
         }
     ),
     # Users read what is assigned to them and do not upload (spec access matrix).
     Role.DEPARTMENT_USER: frozenset(_TENANT_BASE),
+    # Works the Technical Support queue only: no documents, policies, users or audit.
+    Role.SUPPORT_AGENT: frozenset({Permission.SUPPORT}),
 }
 
 # Which roles each role may create or assign.
 ASSIGNABLE_ROLES: dict[Role, frozenset[Role]] = {
-    Role.MASTER_ADMIN: frozenset({Role.ORG_ADMIN}),
+    Role.MASTER_ADMIN: frozenset({Role.ORG_ADMIN, Role.SUPPORT_AGENT}),
     # Users belong to their Branch Manager; other Organization Admins are the Master Admin's.
     Role.ORG_ADMIN: frozenset({Role.BRANCH_MANAGER}),
     Role.BRANCH_MANAGER: frozenset({Role.DEPARTMENT_USER}),
     Role.DEPARTMENT_USER: frozenset(),
+    Role.SUPPORT_AGENT: frozenset(),
 }
 
 

@@ -268,6 +268,20 @@ class Settings(BaseSettings):
     RAG_PREVIOUS_VERSION_FALLBACK: bool = True
     # AI summary of each version, generated in the background once it is searchable.
     AI_SUMMARY_ENABLED: bool = True
+    # Support Center. The AI recommends a ticket's team, priority and skills; below this confidence the
+    # creator must choose the destination. False: categories alone recommend (no model call).
+    SUPPORT_TRIAGE_AI: bool = True
+    SUPPORT_TRIAGE_MIN_CONFIDENCE: float = 0.6
+    # Hours to the first staff reply and to resolution, per priority (JSON in the environment).
+    SUPPORT_SLA_HOURS: dict[str, list[float]] = {
+        "urgent": [1, 4], "high": [4, 24], "medium": [8, 72], "low": [24, 120],
+    }
+    # Share of the resolution window left at which the assignee is warned (0.2: the last fifth).
+    SUPPORT_SLA_WARN_FRACTION: float = 0.2
+    # A resolved ticket the creator neither accepts nor reopens closes itself after this many days.
+    SUPPORT_AUTO_CLOSE_DAYS: int = 7
+    # How often the SLA sweep runs (warnings, breaches, auto-close).
+    SUPPORT_SWEEP_MINUTES: int = 15
     RAG_FALLBACK_MAX_DEPTH: int | None = None
     # Per-principal token-bucket rate limit on /ai/ask, which is the only route
     # to a paid LLM. 0 disables the limiter (tests, single-user local runs).

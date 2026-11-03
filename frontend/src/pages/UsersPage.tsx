@@ -28,6 +28,7 @@ const ROLE_LABEL: Record<User["role"], string> = {
   org_admin: "Organization Admin",
   branch_manager: "Branch Manager",
   department_user: "User",
+  support_agent: "Support Agent",
 };
 
 export function UsersPage() {

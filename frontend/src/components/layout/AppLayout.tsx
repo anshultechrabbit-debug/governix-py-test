@@ -1,6 +1,5 @@
 import {
-  Bell, Building2, ClipboardCheck, FileStack, FileText, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
-  MessageSquareWarning,
+  Bell, Building2, ClipboardCheck, FileStack, FileText, Headset, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
   ScrollText, ShieldCheck, Sparkles, Upload, UserCog, Users, X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -40,7 +39,8 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/organizations", label: "Organizations", icon: Landmark, permission: "organizations:manage" },
         { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
-        { to: "/support", label: "Platform Support", icon: LifeBuoy, permission: "support" },
+        { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },
+        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
       ],
     },
   ],
@@ -61,6 +61,7 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
         { to: "/branches", label: "Branches", icon: Building2, permission: "branches:manage" },
+        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
       ],
     },
   ],
@@ -81,7 +82,7 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/users", label: "Branch Users", icon: UserCog, permission: "users:manage" },
         { to: "/assignments", label: "Assign Documents", icon: ClipboardCheck, permission: "policies:assign" },
-        { to: "/complaints", label: "Complaints", icon: MessageSquareWarning, permission: "support" },
+        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
       ],
     },
   ],
@@ -92,16 +93,19 @@ const NAV: Record<Role, NavSection[]> = {
         { to: "/", label: "Home", icon: LayoutDashboard, permission: "documents:read", end: true },
         { to: "/assistant", label: "AI Assistant", icon: Sparkles, permission: "ai:query" },
         { to: "/policies", label: "My Policies", icon: ScrollText, permission: "policies:read" },
-        { to: "/complaints", label: "Complaints", icon: MessageSquareWarning, permission: "support" },
       ],
     },
   ],
+  // Governix technical support staff: the Support Center only (no documents or policies).
+  support_agent: [
+    { section: "Support", items: [{ to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true }] },
+  ],
 };
 
-/** Support and notifications are available to every role (spec §40–46). */
+/** Notifications and the Support Center are available to every role. */
 const ACCOUNT: NavItem[] = [
   { to: "/notifications", label: "Notifications", icon: Bell },
-  { to: "/support", label: "Support", icon: LifeBuoy, permission: "support" },
+  { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },
 ];
 
 const ROLE_LABEL: Record<Role, string> = {
@@ -109,6 +113,7 @@ const ROLE_LABEL: Record<Role, string> = {
   org_admin: "Organization Admin",
   branch_manager: "Branch Manager",
   department_user: "User",
+  support_agent: "Support Agent",
 };
 
 export function AppLayout() {
@@ -191,7 +196,9 @@ function Sidebar({ compact = false }: { compact?: boolean }) {
   const { me, can } = useAuth();
   if (!me) return null;
   const sections = NAV[me.role];
-  const account = ACCOUNT.filter((item) => !item.permission || can(item.permission));
+  // A link the role's own sections already carry (the platform's Support Center) is not repeated.
+  const listed = new Set(sections.flatMap((section) => section.items.map((item) => item.to)));
+  const account = ACCOUNT.filter((item) => (!item.permission || can(item.permission)) && !listed.has(item.to));
   return (
     <>
       <OrganizationMark />

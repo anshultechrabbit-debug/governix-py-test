@@ -58,6 +58,33 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   identifier (`INVALID_CREDENTIALS`, `VERSION_CONFLICT`, ...). The frontend's `ApiError.code` holds the
   reason.
 
+## Support Center (`app/modules/tickets/`, `/support` API; replaced complaints and `/tickets` on 2026-11-03)
+
+- **Queues** (`queues.py`): Branch Support (per branch), Head Office Support (per bank), Technical Support
+  (Governix, platform). Members are `SupportStaff` profiles on existing accounts; platform staff are
+  `support_agent` accounts (no organization, only the `support` permission). Managers: Branch Manager, Org Admin
+  (Head Office and oversight of every branch), Master Admin; a `lead` profile also manages its queue.
+- **Flow**: create -> `awaiting_confirmation` with an AI `routing` recommendation (`triage.py`, `TRIAGE_PROMPT`;
+  local stand-in or outage -> `_from_text`: title (x2) and description words against each team's general description
+  plus the org's category names, category breaks ties; then the category's route; always confidence 0.5, preselected
+  but marked uncertain) -> the creator confirms or switches the team (`/confirm`) -> `open`, SLA starts,
+  auto-assigned. Drafts are visible to their creator only. Policy-content questions are offered the AI Assistant
+  (`routing.redirect`).
+- **Where it starts** (`TicketService._level_for`): technical -> platform; branch -> the User's branch, or Head
+  Office for a Branch Manager / Org Admin. The model never chooses a queue or a person; skills it returns are
+  kept only if a staff member has that tag.
+- **Assignment** (`assignment.py`): lowest open/capacity, then fewest open, then longest since last assignment,
+  then user id; queue profile rows locked `FOR UPDATE` in id order. Nobody eligible -> unassigned and the
+  managers are notified. Availability/deactivation never moves tickets; `/support/staff/{id}/reassign` does,
+  recorded and notified.
+- **Timeline** is `ticket_messages` with `kind` reply/note/status/forward/assign. Internal notes carry the level
+  they were written at and are shown only to that level's staff side (`reads_notes_of`), never the creator.
+- **SLA** (`sla.py`, settings `SUPPORT_SLA_HOURS` etc.): due times from priority at confirmation; the
+  `support.sla_sweep` job (every `SUPPORT_SWEEP_MINUTES`) warns/breaches once per due time (notification
+  `dedupe_key`) and auto-closes resolved tickets after `SUPPORT_AUTO_CLOSE_DAYS`. A creator may escalate an
+  overdue ticket.
+- Tests: `app/tests/integration/test_support_center.py`.
+
 ## Answer pipeline (`app/modules/rag/service.py`, `RAGService.answer_events`)
 
 1. Standalone rewrite.

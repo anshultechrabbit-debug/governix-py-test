@@ -57,6 +57,9 @@ class UserService:
         if role not in ASSIGNABLE_ROLES[principal.role]:
             raise PermissionDeniedError(f"You cannot assign the role {role}.")
 
+        if role is Role.SUPPORT_AGENT:
+            # Governix's technical support staff belong to the platform, not to an organization.
+            return None, None, None
         if principal.role is Role.MASTER_ADMIN:
             if organization_id is None or self.organizations.get(organization_id) is None:
                 raise ValidationError("A valid organization_id is required.")
@@ -157,7 +160,7 @@ class UserService:
         if principal.role is Role.MASTER_ADMIN:
             # Every organization's admins, and the platform administrators themselves.
             return {"organization_id": None, "branch_id": None,
-                    "roles": frozenset({Role.ORG_ADMIN, Role.MASTER_ADMIN})}
+                    "roles": frozenset({Role.ORG_ADMIN, Role.MASTER_ADMIN, Role.SUPPORT_AGENT})}
         # The people the principal manages: an Organization Admin's Branch Managers, a Branch
         # Manager's Users.
         return {
