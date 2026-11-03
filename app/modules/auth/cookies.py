@@ -4,11 +4,12 @@
     governix_refresh  HttpOnly  the opaque refresh token; ends with the browser session
     governix_csrf     readable  the page echoes it in X-CSRF-Token on every unsafe request
 
-All three are SameSite=Strict. Because the browser sends cookies by itself, an
-unsafe request must also carry the CSRF header: another site can make the
-browser send the cookies but cannot read the CSRF value to send with them. The
-access JWT carries its own CSRF value, so only the header issued with that
-token is accepted.
+All three are SameSite=Lax. Because the browser sends cookies by itself, an
+unsafe request authenticated by cookie must always carry the CSRF header (see
+auth.dependencies): another page can make the browser send the cookies but
+cannot read the CSRF value to send with them. Lax alone is not enough: on an IP
+address every port is the same site. The access JWT carries its own CSRF value,
+so only the header issued with that token is accepted.
 """
 
 import secrets
@@ -32,20 +33,27 @@ def _secure(request: Request, settings: Settings) -> bool:
     return request.url.scheme == "https"
 
 
+def _samesite(settings: Settings) -> str:
+    """AUTH_COOKIE_SAMESITE: "lax" (default) or "strict". "none" would send the session with every cross-site
+    request, so it is not accepted."""
+    value = settings.AUTH_COOKIE_SAMESITE.lower()
+    return value if value in ("lax", "strict") else "lax"
+
+
 def set_auth_cookies(response: Response, request: Request, settings: Settings, tokens: TokenPair) -> None:
-    secure = _secure(request, settings)
+    secure, samesite = _secure(request, settings), _samesite(settings)
     response.set_cookie(
         ACCESS_COOKIE, tokens.access_token, max_age=tokens.expires_in,
-        httponly=True, secure=secure, samesite="lax",
+        httponly=True, secure=secure, samesite=samesite,
     )
-    response.set_cookie(REFRESH_COOKIE, tokens.refresh_token, httponly=True, secure=secure, samesite="lax")
-    response.set_cookie(CSRF_COOKIE, tokens.csrf_token, secure=secure, samesite="lax")
+    response.set_cookie(REFRESH_COOKIE, tokens.refresh_token, httponly=True, secure=secure, samesite=samesite)
+    response.set_cookie(CSRF_COOKIE, tokens.csrf_token, secure=secure, samesite=samesite)
 
 
 def clear_auth_cookies(response: Response, request: Request, settings: Settings) -> None:
-    secure = _secure(request, settings)
+    secure, samesite = _secure(request, settings), _samesite(settings)
     for name in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
-        response.delete_cookie(name, httponly=name != CSRF_COOKIE, secure=secure, samesite="lax")
+        response.delete_cookie(name, httponly=name != CSRF_COOKIE, secure=secure, samesite=samesite)
 
 
 def csrf_matches(request: Request, expected: str | None) -> bool:

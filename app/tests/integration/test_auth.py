@@ -74,13 +74,28 @@ def test_tokens_travel_only_in_cookies(client, db):
     assert set(response.json()["data"]) == {"expires_in"}
     set_cookies = {c.split("=", 1)[0]: c.lower() for c in response.headers.get_list("set-cookie")}
     assert set(set_cookies) == {ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE}
-    assert all("samesite=strict" in c for c in set_cookies.values())
+    assert all("samesite=lax" in c for c in set_cookies.values())
     assert "httponly" in set_cookies[ACCESS_COOKIE] and "httponly" in set_cookies[REFRESH_COOKIE]
     assert "httponly" not in set_cookies[CSRF_COOKIE]  # the page must read it to echo it
-    # A bearer header is no longer a way in.
+
+
+def test_a_bearer_client_needs_no_csrf_header(client, db):
+    tenant = make_tenant(db)
+    response = client.post("/auth/login", json={"email": tenant.admin.email, "password": PASSWORD})
     access = response.cookies[ACCESS_COOKIE]
     client.cookies.clear()
-    assert client.get("/auth/me", headers={"Authorization": f"Bearer {access}"}).status_code == 401
+    bearer = {"Authorization": f"Bearer {access}"}
+    assert client.get("/auth/me", headers=bearer).status_code == 200
+    # The browser never sends a Bearer header by itself, so an unsafe request with one is not a forgery.
+    assert client.post("/branches", headers=bearer, json={"name": "X", "code": "X", **ADDRESS}).status_code == 201
+
+
+def test_a_cookie_refresh_needs_the_csrf_header(client, db):
+    tenant = make_tenant(db)
+    session = login(client, tenant.admin)
+    cookies = {"Cookie": session_headers(session.cookies)["Cookie"]}
+    response = client.post("/auth/refresh", headers=cookies)
+    assert response.status_code == 403 and response.json()["error"]["reason"] == "CSRF_FAILED"
 
 
 def test_unsafe_requests_need_their_sessions_csrf_header(client, db):

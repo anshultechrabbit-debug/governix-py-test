@@ -481,9 +481,11 @@ def build_evidence(
     limit: int,
     required: list[Candidate] | None = None,
     context_chars: int = 600,
+    whole_document: bool = False,
 ) -> EvidenceSet:
     """`required`: passages that must be in the evidence whatever their rank (the best passage of each
-    document or version a question compares; see RAGService._sides)."""
+    document or version a question compares; see RAGService._sides). `whole_document`: the question asks what
+    a policy is about as a whole, so its opening passages and contents come first."""
     pool = candidates[: max(rerank_top_n * 4, limit)]
     if not pool:
         return EvidenceSet([], 0.0, key_terms(question), 0.0, [])
@@ -529,7 +531,7 @@ def build_evidence(
             candidate.rerank_score = candidate.rerank_score or 0.0
             selected.append(candidate)
 
-    if is_document_question(question):
+    if is_document_question(question) or whole_document:
         present = {c.chunk_id for c in selected}
         documents = list(dict.fromkeys(c.document_id for c in selected))[:2]
         cover = [c for c in retriever.front_matter(principal, documents, filters) if c.chunk_id not in present]
@@ -537,7 +539,7 @@ def build_evidence(
             candidate.rerank_score = candidate.rerank_score or 0.0
         selected = cover + selected
 
-    if asks_for_contents(question):
+    if asks_for_contents(question) or whole_document:
         # "Which chapters are in Version 1.0 but not 2.0?": the contents page of each document.
         present = {c.chunk_id for c in selected}
         documents = list(dict.fromkeys(c.document_id for c in selected))[:MAX_CONTENTS_DOCUMENTS]

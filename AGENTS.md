@@ -44,12 +44,14 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
 
 ## Auth sessions and API errors
 
-- Tokens travel only in cookies (`app/modules/auth/cookies.py`), never in a response body, and an
-  `Authorization` header is ignored. `governix_access` (JWT) and `governix_refresh` are HttpOnly;
-  `governix_csrf` is readable. All are SameSite=Strict, and `Secure` follows the request scheme
-  (`AUTH_COOKIE_SECURE`), because the live site is plain HTTP.
-- Every POST/PUT/PATCH/DELETE must send `X-CSRF-Token` equal to the `csrf` claim in its access JWT
-  (refresh and logout compare it with the cookie). The frontend client adds it.
+- Tokens are never in a response body. The web app uses cookies (`app/modules/auth/cookies.py`); since commit
+  `1c6523fa` a non-browser client may also send `Authorization: Bearer <access>` (and a Bearer refresh token to
+  `/auth/refresh`). `governix_access` (JWT) and `governix_refresh` are HttpOnly; `governix_csrf` is readable. All
+  are SameSite=Lax, and `Secure` follows the request scheme (`AUTH_COOKIE_SECURE`), because the live site is plain HTTP.
+- Every cookie-authenticated POST/PUT/PATCH/DELETE must send `X-CSRF-Token` equal to the `csrf` claim in its access
+  JWT; a cookie refresh compares it with the CSRF cookie, and logout too. A missing header is refused, never
+  skipped (SameSite=Lax does not protect an IP-addressed site: every port is the same site). Bearer requests need no
+  CSRF header. The frontend client adds it.
 - Tabs share the refresh cookie. A token rotated less than 30 s ago gets `TOKEN_ROTATED` (another tab
   won the race) instead of revoking the family.
 - Error bodies: `error.code` is the HTTP status (401, 404, ...) and `error.reason` the stable text
@@ -196,6 +198,28 @@ Builds on v60-v63's calculation path (the result must be recomputed and lead the
   ("Attempt 2: ..."): what validation removed, a failed reasoning check, `insufficient_evidence`, or "No claim
   states a recomputed result" with the calculations and claims the model wrote. Read `audit_events`
   (`action='ai.query'`) to see why a UI question was refused, instead of re-running it.
+
+## Framing words, misspellings, document lists and overviews (v73)
+
+The general fix for "a word that names nothing decided the answer" ("Tell me *something* about ...", "... *so far*?"):
+no word lists.
+- **Every question is read once by the rewrite** (`query_rewrite.standalone_question`), not only ones a pattern
+  flags. For a question that looked complete, only spelling may change (`_spelling_only`: each changed word ≥0.75
+  similar, or words run together split, e.g. "morgtage" → "mortgage", "documentsyou" → "documents you"). Any other
+  rewording is discarded.
+- **Framing words** (`Rewrite.framing`, the model's `framing_words`): words that only frame the ask. They are not
+  required by the gate, the on-topic check or `_has_subject` (`RAGService._framing`).
+  - A word that no visible document uses is never framing, whatever the model says. That keeps "FIU-IND" refused
+    and leaves typos to the restatement.
+  - Figures are never framing. Every claim is still validated.
+- **"Which documents do you have?"** (`kind == "documents"`, no policy named, and no remaining word a document
+  uses) gets `DOCUMENT_LIST`: the policies the reader can see (same ACL as search), each with its version in force.
+  No search, no model call for the answer. "What documents are needed for a home loan?" still searches.
+- **Overview** (`plan.overview`, `_asks_overview`): a question that names a policy and nothing else ("tell me about
+  the mortgage policy"). The search is limited to that policy, its opening passages and contents are read
+  (`build_evidence(whole_document=)`), and the prompt asks for purpose and main topics. It skips the term gate, the
+  ambiguity question and the on-topic check, and never falls back to an earlier version.
+- Without a model (local stand-in, outage) there are no framing words or kinds: behaviour is as before v73.
 
 ## "Not found" answers (v58)
 

@@ -62,13 +62,16 @@ def login(body: LoginRequest, request: Request, response: Response, service: Ser
 @router.post("/refresh", response_model=ApiResponse[AuthSession])
 def refresh(request: Request, response: Response, service: Service, settings: AppSettings):
     refresh_token = request.cookies.get(REFRESH_COOKIE)
+    from_cookie = bool(refresh_token)
     if not refresh_token:
         auth_header = request.headers.get("Authorization")
         if auth_header and auth_header.lower().startswith("bearer "):
             refresh_token = auth_header[7:].strip()
     if not refresh_token:
         raise AuthenticationError("Authentication required.")
-    if request.cookies.get(CSRF_COOKIE):
+    if from_cookie:
+        # A refresh by cookie must come from the page: the CSRF cookie is echoed in the header. Without the CSRF
+        # cookie there is nothing to echo, and the request is refused rather than let through.
         require_csrf(request, request.cookies.get(CSRF_COOKIE))
     try:
         tokens = service.refresh(refresh_token)

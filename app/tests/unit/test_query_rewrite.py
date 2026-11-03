@@ -43,9 +43,38 @@ def test_follow_ups_are_detected(question):
 ])
 def test_standalone_questions_are_left_alone(question):
     assert not refers_to_earlier_turn(question)
-    llm = FakeLLM()
-    assert standalone_question(llm, question, HISTORY).question == question
-    assert llm.calls == []  # no model call for an ordinary question
+    # Read once (spelling, framing words, kind), but a rewording of a complete question is not used.
+    llm = FakeLLM({"standalone_question": "Please tell me: " + question, "resolvable": True, "language": "English",
+                   "framing_words": [], "kind": "question"})
+    rewrite = standalone_question(llm, question, HISTORY)
+    assert rewrite.question == question and rewrite.reason is None
+
+
+def test_a_misspelling_no_pattern_knows_is_corrected():
+    llm = FakeLLM({"standalone_question": "Tell me something about mortgage policy", "resolvable": True,
+                   "language": "English", "framing_words": ["something"], "kind": "question"})
+    rewrite = standalone_question(llm, "tell me something about morgtage policy", [])
+    assert rewrite.question == "Tell me something about mortgage policy" and rewrite.reason == "normalized"
+    assert rewrite.framing == frozenset({"something"})
+
+
+def test_words_run_together_are_split():
+    llm = FakeLLM({"standalone_question": "what documents you have consumed so far?", "resolvable": True,
+                   "language": "English", "framing_words": ["consumed", "so far"], "kind": "documents"})
+    rewrite = standalone_question(llm, "what documentsyou have consumed so far ?", [])
+    assert rewrite.question == "what documents you have consumed so far?"
+    assert rewrite.framing == frozenset({"consumed", "so", "far"}) and rewrite.kind == "documents"
+
+
+@pytest.mark.parametrize("typed, written, same", [
+    ("What is the procesing fee?", "What is the processing fee?", True),
+    ("What is the fee?", "What is the rate?", False),  # another word, not a spelling
+    ("What is the fee?", "What is the processing fee?", False),  # a word added
+    ("Is the fee waived?", "Is the fee not waived?", False),
+])
+def test_only_spelling_may_change_a_complete_question(typed, written, same):
+    from app.modules.rag.query_rewrite import _spelling_only
+    assert _spelling_only(typed, written) is same
 
 
 def test_follow_up_without_history_is_unresolvable():

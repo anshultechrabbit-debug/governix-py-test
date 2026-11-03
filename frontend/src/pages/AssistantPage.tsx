@@ -431,6 +431,18 @@ function NoAnswer({ reason, onRetry }: { reason: Answer["no_answer"]; onRetry: (
       </div>
     );
   }
+  if (reason.reason === "DOCUMENT_LIST") {
+    // "Which documents do you have?": the policies this reader can ask about, from the catalogue (no search).
+    return (
+      <div className="p-4 sm:p-5">
+        <p className="font-medium text-ink">Documents you can ask about</p>
+        <p className="mt-1 text-sm text-ink-soft">{reason.message}</p>
+        {!!reason.suggestions.length && (
+          <ul className="mt-3 list-disc space-y-0.5 pl-4 text-sm text-ink-soft">{reason.suggestions.map((policy) => <li key={policy}>{policy}</li>)}</ul>
+        )}
+      </div>
+    );
+  }
   if (reason.reason === "AMBIGUOUS") {
     // Found, but several rules match with different values: ask which one, never pick.
     return (

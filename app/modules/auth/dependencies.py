@@ -18,7 +18,8 @@ from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.organizations.model import Organization, OrganizationStatus
 from app.modules.users.model import User
 
-# The access token comes only from its HttpOnly cookie (see cookies.py); an Authorization header is ignored.
+# The access token comes from its HttpOnly cookie (see cookies.py), or from an "Authorization: Bearer" header for
+# a client that is not the browser page. Only the cookie needs the CSRF header.
 _access_cookie = APIKeyCookie(name=ACCESS_COOKIE, auto_error=False)
 
 
@@ -57,7 +58,10 @@ def get_current_principal(
     if not token:
         raise AuthenticationError("Authentication required.")
     claims = decode_access_token(settings, token)
-    if request.headers.get("X-CSRF-Token"):
+    if token_from_header is None:
+        # The browser sends the cookie on its own, so an unsafe request must also prove it came from the page:
+        # always, not only when it chooses to send the header. A Bearer token is never sent by the browser on
+        # its own, so a Bearer client needs no CSRF header.
         require_csrf(request, claims.get("csrf"))
     try:
         user_id = uuid.UUID(claims["sub"])

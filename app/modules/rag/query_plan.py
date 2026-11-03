@@ -145,6 +145,8 @@ class QueryPlan:
     since: bool = False
     # "Compare a loan sanctioned on 2026-06-15 with one on 2025-06-15": the versions in force on each date.
     as_of_dates: list[date] = field(default_factory=list)
+    # "Tell me about the mortgage policy": what the named policy is about as a whole (RAGService._asks_overview).
+    overview: bool = False
 
     def describe(self) -> dict:
         return {
@@ -154,6 +156,7 @@ class QueryPlan:
             "version_labels": self.version_labels,
             "version_ids": [str(v) for v in self.version_ids],
             "explanation": self.explanation,
+            **({"overview": True} if self.overview else {}),
         }
 
 

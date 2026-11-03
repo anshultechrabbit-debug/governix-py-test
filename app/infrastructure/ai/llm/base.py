@@ -57,10 +57,10 @@ class TimedLLM(LLMProvider):
     each call instead, and only for that call."""
 
     def __init__(self, llm: LLMProvider, ends_at: Callable[[], float | None],
-                 on_call: Callable[[str, float], None] | None = None) -> None:
+                 on_call: Callable[[str, float, "LLMResult | None"], None] | None = None) -> None:
         self._llm = llm
         self._ends_at = ends_at
-        # Told each call's system prompt and wall time in ms, for the audit trail.
+        # Told each call's system prompt, wall time in ms and result (None when it failed), for the audit trail.
         self._on_call = on_call
 
     def __getattr__(self, name: str) -> Any:
@@ -69,11 +69,13 @@ class TimedLLM(LLMProvider):
     def generate_json(self, system: str, user: str, schema: dict[str, Any], *, context: dict[str, Any] | None = None) -> LLMResult:
         token = CALL_ENDS_AT.set(self._ends_at())
         started = time.perf_counter()
+        result = None
         try:
-            return self._llm.generate_json(system, user, schema, context=context)
+            result = self._llm.generate_json(system, user, schema, context=context)
+            return result
         finally:
             CALL_ENDS_AT.reset(token)
-            self._report(system, started)
+            self._report(system, started, result)
 
     def stream_json(
         self, system: str, user: str, schema: dict[str, Any], *, context: dict[str, Any] | None = None
@@ -81,6 +83,7 @@ class TimedLLM(LLMProvider):
         stream = self._llm.stream_json(system, user, schema, context=context)
         ends_at = self._ends_at()
         started = time.perf_counter()
+        result = None
         try:
             while True:
                 # A generator's steps may each run in another context (a server's thread pool): set the
@@ -92,11 +95,13 @@ class TimedLLM(LLMProvider):
                     return
                 finally:
                     CALL_ENDS_AT.reset(token)
+                if isinstance(part, LLMResult):
+                    result = part
                 yield part
         finally:
             # From the request to the last part, including the reader's work between parts.
-            self._report(system, started)
+            self._report(system, started, result)
 
-    def _report(self, system: str, started: float) -> None:
+    def _report(self, system: str, started: float, result: "LLMResult | None") -> None:
         if self._on_call is not None:
-            self._on_call(system, round((time.perf_counter() - started) * 1000, 1))
+            self._on_call(system, round((time.perf_counter() - started) * 1000, 1), result)

@@ -456,6 +456,14 @@ def build_user_prompt(question: str, plan: QueryPlan, evidence: EvidenceSet) -> 
     # The reader's message, fenced as data: it can ask, never instruct (see the last rule of SYSTEM_PROMPT).
     fenced = question.replace("<<<", "‹‹‹").replace(">>>", "›››")
     parts = [f"Question:\n<<<\n{fenced}\n>>>", f"Answer scope: {plan.explanation}."]
+    if plan.overview:
+        parts.append(
+            "The question asks what this policy is about as a whole. The evidence is its opening passages and its "
+            "contents. Write one claim stating its purpose and scope as the evidence states them, then one claim "
+            "for each main topic it covers (at most six), named as its headings or contents name them. Give no "
+            "figures unless a passage states them as part of its purpose. This is an answer: set "
+            "insufficient_evidence only if no passage says what the policy is for or what it covers."
+        )
     if evidence.comparison:
         parts.append("[D1] Deterministic comparison of the versions (authoritative diff):\n<<<\n"
                      + comparison_text(evidence.comparison) + "\n>>>")
