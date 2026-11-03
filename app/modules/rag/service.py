@@ -102,6 +102,16 @@ _CALL_NAMES = [
 def _call_name(system: str) -> str:
     return next((name for prompt, name in _CALL_NAMES if system.startswith(prompt[:80])), "other")
 
+
+def _model_call(system: str, ms: float, result: LLMResult | None) -> dict[str, Any]:
+    """One model call for the audit trail: which prompt, how long, and its tokens (or that it failed)."""
+    call: dict[str, Any] = {"call": _call_name(system), "ms": ms}
+    if result is None:
+        call["failed"] = True
+    else:
+        call.update(model=result.model, input_tokens=result.input_tokens, output_tokens=result.output_tokens)
+    return call
+
 # When nothing came close enough to suggest a question about it (see _explain_not_found).
 SUGGESTIONS = [
     "Naming the policy you mean, by its title or number",
@@ -550,7 +560,7 @@ class RAGService:
         self._model_calls: list[dict[str, Any]] = []
         self._llm_factory: Callable[[], LLMProvider] = lambda: TimedLLM(
             llm_factory(), lambda: self._calls_end,
-            lambda system, ms: self._model_calls.append({"call": _call_name(system), "ms": ms}))
+            lambda system, ms, result: self._model_calls.append(_model_call(system, ms, result)))
         self._rephrase = rephraser(self._llm_factory)
         self._session_factory = session_factory
         self.retriever = HybridRetriever(session_factory, embedder)
