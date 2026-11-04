@@ -31,6 +31,9 @@ async def handle_validation_error(request: Request, exc: RequestValidationError)
         {"field": ".".join(str(part) for part in err["loc"]), "message": err["msg"]}
         for err in exc.errors()
     ]
+    # Say which field failed, so a 422 in the server log can be diagnosed (messages hold no submitted values).
+    logger.warning("Request validation failed on %s %s: %s", request.method, request.url.path,
+                   "; ".join(f"{d['field']}: {d['message']}" for d in details))
     return error_response(422, "VALIDATION_ERROR", "Request validation failed.", details)
 
 

@@ -39,7 +39,8 @@ export function AssistantPage() {
   // A question handed over by another page (the Support Center's "Ask the AI Assistant"), placed in the box
   // for the reader to send: never asked on their behalf.
   const handedOver = (useLocation().state as { question?: string } | null)?.question;
-  const [question, setQuestion] = useState(handedOver ?? "");
+  // The server takes 2 to 2000 characters; a long ticket description is cut, not refused with a 422.
+  const [question, setQuestion] = useState((handedOver ?? "").slice(0, 2000));
   const [wordless, setWordless] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
@@ -66,8 +67,8 @@ export function AssistantPage() {
     event.preventDefault();
     const value = question.trim();
     if (!value || pending) return;
-    // Emoji or punctuation alone has nothing to search for.
-    if (!/[\p{L}\p{N}]/u.test(value)) return setWordless(true);
+    // Emoji, punctuation or a single character has nothing to search for (the server needs 2+ characters).
+    if (value.length < 2 || !/[\p{L}\p{N}]/u.test(value)) return setWordless(true);
     dispatch(ask({ id: newId(), question: value, options }));
     setQuestion("");
   }
