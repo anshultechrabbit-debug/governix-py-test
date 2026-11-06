@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Bell, Bot, LifeBuoy, ScrollText, Upload, Users } from "lucide-react";
+import { AlertTriangle, Bell, Bot, /* LifeBuoy, SUPPORT CENTER DISABLED (2026-11-06) */ ScrollText, Upload, Users } from "lucide-react";
 import { Link } from "react-router";
 import { api } from "../api/client";
 import type { Dashboard } from "../api/types";
@@ -60,6 +60,7 @@ export function DashboardPage() {
           <p className="mt-2 text-sm font-semibold">Notifications</p>
           <p className="mt-0.5 text-xs text-muted">New policies, assignments, updates and ticket replies</p>
         </Link>
+        {/* SUPPORT CENTER DISABLED (2026-11-06)
         {can("support") && (
           <Link to="/support" className="rounded-lg border border-line bg-surface p-4 transition-colors hover:border-brand-500/40">
             <LifeBuoy className="size-5 text-brand-600" />
@@ -67,6 +68,7 @@ export function DashboardPage() {
             <p className="mt-0.5 text-xs text-muted">{isUser ? "Raise a ticket: we route it to the right team" : "Your tickets and your team's queue"}</p>
           </Link>
         )}
+        */}
       </div>
 
       {/* OpenAI usage card: hidden for now. */}

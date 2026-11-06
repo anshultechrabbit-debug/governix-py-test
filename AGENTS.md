@@ -98,6 +98,12 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
 
 ## Support Center (`app/modules/tickets/`, `/support` API; replaced complaints and `/tickets` on 2026-11-03)
 
+- **DISABLED for now (2026-11-06, user's request)**: the whole Support Center and Support Staff are commented out for
+  every role (search "SUPPORT CENTER DISABLED"): the two routers in `app/main.py`, the SLA sweep in
+  `workers/platform/tasks.py` (the task stays registered as a no-op), the routes and menu items in `App.tsx` /
+  `AppLayout.tsx`, the Dashboard card. Tables, models and the module code are untouched;
+  `test_support_center.py` is skipped. Uncomment those places to bring it back.
+
 - **Queues** (`queues.py`): Branch Support (per branch), Head Office Support (per bank), Technical Support
   (Governix, platform). Members are `SupportStaff` profiles on existing accounts; platform staff are
   `support_agent` accounts (no organization, only the `support` permission). Managers: Branch Manager, Org Admin
@@ -126,6 +132,8 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   (`queues.can_handle`, `handling_clause`; assignment already skipped them; a manager assigning it to them gets
   `ASSIGNEE_IS_CREATOR`). The creator's only status change is Reopen, on a resolved or closed ticket
   (`CREATOR_TRANSITIONS`); "Accept and close" is gone, resolved tickets auto-close (`SUPPORT_AUTO_CLOSE_DAYS`).
+- **No messages on a resolved ticket** (`NO_MESSAGES` = resolved, closed, cancelled): reply, internal note and attach
+  are refused (409 `INVALID_STATE`) and hidden. The creator reopens it, or the team moves it back to in progress.
 - **Timeline** is `ticket_messages` with `kind` reply/note/status/forward/assign. Internal notes carry the level
   they were written at and are shown only to that level's staff side (`reads_notes_of`), never the creator.
 - **SLA** (`sla.py`, settings `SUPPORT_SLA_HOURS` etc.): due times from priority at confirmation; the

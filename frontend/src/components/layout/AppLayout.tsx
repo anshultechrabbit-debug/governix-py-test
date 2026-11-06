@@ -1,5 +1,5 @@
 import {
-  Bell, Building2, ClipboardCheck, FileStack, FileText, Headset, Landmark, LayoutDashboard, LifeBuoy, Menu as MenuIcon,
+  Bell, Building2, ClipboardCheck, FileStack, FileText, /* Headset, */ Landmark, LayoutDashboard, /* LifeBuoy, */ Menu as MenuIcon,  // SUPPORT CENTER DISABLED (2026-11-06)
   ScrollText, ShieldCheck, Sparkles, Upload, UserCog, Users, X,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -40,8 +40,9 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/organizations", label: "Organizations", icon: Landmark, permission: "organizations:manage" },
         { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
-        { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },
-        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
+        // SUPPORT CENTER DISABLED (2026-11-06)
+        // { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },
+        // { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
       ],
     },
   ],
@@ -62,7 +63,7 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/users", label: "Users", icon: Users, permission: "users:manage" },
         { to: "/branches", label: "Branches", icon: Building2, permission: "branches:manage" },
-        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
+        // { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },  // SUPPORT CENTER DISABLED (2026-11-06)
       ],
     },
   ],
@@ -83,7 +84,7 @@ const NAV: Record<Role, NavSection[]> = {
       items: [
         { to: "/users", label: "Branch Users", icon: UserCog, permission: "users:manage" },
         { to: "/assignments", label: "Assign Documents", icon: ClipboardCheck, permission: "policies:assign" },
-        { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },
+        // { to: "/support/staff", label: "Support Staff", icon: Headset, permission: "support:staff" },  // SUPPORT CENTER DISABLED (2026-11-06)
       ],
     },
   ],
@@ -99,14 +100,15 @@ const NAV: Record<Role, NavSection[]> = {
   ],
   // Governix technical support staff: the Support Center only (no documents or policies).
   support_agent: [
-    { section: "Support", items: [{ to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true }] },
+    // SUPPORT CENTER DISABLED (2026-11-06)
+    // { section: "Support", items: [{ to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true }] },
   ],
 };
 
 /** Notifications and the Support Center are available to every role. */
 const ACCOUNT: NavItem[] = [
   { to: "/notifications", label: "Notifications", icon: Bell },
-  { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },
+  // { to: "/support", label: "Support Center", icon: LifeBuoy, permission: "support", end: true },  // SUPPORT CENTER DISABLED (2026-11-06)
 ];
 
 const ROLE_LABEL: Record<Role, string> = {

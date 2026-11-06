@@ -50,15 +50,18 @@ def sweep(payload: dict, ctx: JobContext) -> None:
 
 @task(SUPPORT_SWEEP)
 def support_sweep(payload: dict, ctx: JobContext) -> None:
-    from app.modules.tickets.sla import sweep as sla_sweep
-
-    rt = get_runtime()
-    with rt.session_factory() as session:
-        counts = sla_sweep(session, rt.settings)
-        session.commit()
-    if any(counts.values()):
-        logger.info("Support SLA sweep: %s", counts)
-    schedule_support_sweep(rt.queue, rt.settings.SUPPORT_SWEEP_MINUTES, after=datetime.fromisoformat(payload["slot"]))
+    # SUPPORT CENTER DISABLED (2026-11-06): still registered, so a sweep already in the queue finishes quietly; it does nothing and
+    # does not queue the next one.
+    return
+    # from app.modules.tickets.sla import sweep as sla_sweep
+    #
+    # rt = get_runtime()
+    # with rt.session_factory() as session:
+    #     counts = sla_sweep(session, rt.settings)
+    #     session.commit()
+    # if any(counts.values()):
+    #     logger.info("Support SLA sweep: %s", counts)
+    # schedule_support_sweep(rt.queue, rt.settings.SUPPORT_SWEEP_MINUTES, after=datetime.fromisoformat(payload["slot"]))
 
 
 def schedule_support_sweep(queue: Queue, minutes: int, after: datetime | None = None) -> None:
@@ -74,11 +77,12 @@ def schedule_support_sweep(queue: Queue, minutes: int, after: datetime | None = 
 def schedule_daily(queue: Queue, now: datetime | None = None) -> None:
     """Make sure today's sweep ran or is queued, and tomorrow's is waiting. Safe to call repeatedly.
     Also keeps the Support Center's SLA sweep going."""
-    try:
-        minutes = get_runtime().settings.SUPPORT_SWEEP_MINUTES
-    except RuntimeError:  # no runtime configured (a script)
-        minutes = 15
-    schedule_support_sweep(queue, minutes)
+    # SUPPORT CENTER DISABLED (2026-11-06): the SLA sweep is not scheduled.
+    # try:
+    #     minutes = get_runtime().settings.SUPPORT_SWEEP_MINUTES
+    # except RuntimeError:  # no runtime configured (a script)
+    #     minutes = 15
+    # schedule_support_sweep(queue, minutes)
     now = now or datetime.now(UTC)
     today = now.date()
     queue.enqueue(EXPIRY_SWEEP, {"date": today.isoformat()}, idempotency_key=f"expiry-sweep:{today.isoformat()}")

@@ -26,9 +26,10 @@ const NotificationsPage = page(() => import("./pages/NotificationsPage"), "Notif
 const OrganizationsPage = page(() => import("./pages/OrganizationsPage"), "OrganizationsPage");
 const PoliciesPage = page(() => import("./pages/PoliciesPage"), "PoliciesPage");
 const PolicyDetailPage = page(() => import("./pages/PolicyDetailPage"), "PolicyDetailPage");
-const SupportPage = page(() => import("./pages/SupportPage"), "SupportPage");
-const SupportStaffPage = page(() => import("./pages/SupportStaffPage"), "SupportStaffPage");
-const TicketPage = page(() => import("./pages/TicketPage"), "TicketPage");
+// SUPPORT CENTER DISABLED (2026-11-06): Support Center and Support Staff pages are off for every role.
+// const SupportPage = page(() => import("./pages/SupportPage"), "SupportPage");
+// const SupportStaffPage = page(() => import("./pages/SupportStaffPage"), "SupportStaffPage");
+// const TicketPage = page(() => import("./pages/TicketPage"), "TicketPage");  // SUPPORT CENTER DISABLED (2026-11-06)
 const UploadBatchPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchPage");
 const UploadBatchesPage = page(() => import("./pages/UploadBatchPage"), "UploadBatchesPage");
 const UploadPage = page(() => import("./pages/UploadPage"), "UploadPage");
@@ -71,7 +72,7 @@ export function App() {
   // The Master Admin runs the platform and never reads tenant knowledge, so it lands on Organizations;
   // a Support Agent works the Support Center only.
   const home = can("documents:read") ? <DashboardPage />
-    : <Navigate to={can("organizations:manage") ? "/organizations" : "/support"} replace />;
+    : <Navigate to={can("organizations:manage") ? "/organizations" : "/notifications" /* SUPPORT CENTER DISABLED (2026-11-06): was "/support" */} replace />;
   return (
     <>
       <Routes>
@@ -103,11 +104,13 @@ export function App() {
 
           {/* Account */}
           <Route path="notifications" element={<NotificationsPage />} />
-          {/* Complaints and support are one Support Center now; old links land there. */}
+          {/* SUPPORT CENTER DISABLED (2026-11-06)
+          Complaints and support are one Support Center now; old links land there.
           <Route path="complaints" element={<Navigate to="/support" replace />} />
           <Route path="support" element={<Guard permission="support"><SupportPage /></Guard>} />
           <Route path="support/staff" element={<Guard permission="support:staff"><SupportStaffPage /></Guard>} />
           <Route path="support/:id" element={<Guard permission="support"><TicketPage /></Guard>} />
+          */}
 
           <Route path="*" element={<NotFoundPage />} />
         </Route>

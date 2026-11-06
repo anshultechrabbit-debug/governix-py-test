@@ -33,8 +33,10 @@ from app.modules.policies.router import router as policies_router
 from app.modules.rag.router import router as rag_router
 from app.modules.search.retrieval import shutdown_lane_pool
 from app.modules.search.router import router as search_router
-from app.modules.tickets.router import router as tickets_router
-from app.modules.tickets.router import staff_router as support_staff_router
+# SUPPORT CENTER DISABLED (2026-11-06): the Support Center (tickets) and Support Staff APIs are switched off for every role.
+# Uncomment these two imports and the two routers below to bring them back. Tables and models stay.
+# from app.modules.tickets.router import router as tickets_router
+# from app.modules.tickets.router import staff_router as support_staff_router
 from app.modules.uploads.router import router as uploads_router
 from app.modules.users.router import router as users_router
 from app.workers.runtime import Runtime, configure_runtime
@@ -172,8 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         uploads_router,
         assignments_router,
         notifications_router,
-        support_staff_router,
-        tickets_router,
+        # support_staff_router,  # SUPPORT CENTER DISABLED (2026-11-06)
+        # tickets_router,  # SUPPORT CENTER DISABLED (2026-11-06)
     ):
         app.include_router(router)
     return app

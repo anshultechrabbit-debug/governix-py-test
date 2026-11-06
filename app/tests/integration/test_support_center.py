@@ -60,6 +60,10 @@ def master(db):
     return user
 
 
+# SUPPORT CENTER DISABLED (2026-11-06): the /support routers are not mounted (app/main.py).
+pytestmark = [pytest.mark.integration, pytest.mark.skip(reason="SUPPORT CENTER DISABLED (2026-11-06)")]
+
+
 def staff_user(db, tenant, branch=None, name="Staff"):
     user = make_user(db, Role.DEPARTMENT_USER, org=tenant.org, branch=branch or tenant.branch_a)
     user.full_name = name
@@ -440,7 +444,11 @@ def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant):
     assert reopened["status"] == "open" and reopened["reopen_count"] == 1 and reopened["resolution_note"] is None
     resolved = manager.post(f"{url}/status", json={"status": "resolved", "note": "Done for real."}).json()["data"]
     assert resolved["actions"]["statuses"] == ["in_progress"]
-    assert user.get(url).json()["data"]["actions"]["statuses"] == ["open"]  # the creator only reopens
+    seen = user.get(url).json()["data"]["actions"]
+    assert seen["statuses"] == ["open"] and not seen["reply"] and not seen["attach"]  # the creator only reopens
+    assert not resolved["actions"]["reply"] and not resolved["actions"]["note"]
+    assert user.post(f"{url}/messages", json={"body": "one more"}).status_code == 409
+    assert manager.post(f"{url}/messages", json={"body": "one more"}).status_code == 409
     assert user.post(f"{url}/status", json={"status": "closed"}).status_code == 403
     statuses = [e["status_change"] for e in resolved["timeline"] if e["status_change"]]
     assert statuses[-2:] == ["open", "resolved"]

@@ -92,6 +92,9 @@ CREATOR_TRANSITIONS: dict[str, set[str]] = {
     TicketStatus.CLOSED: {TicketStatus.OPEN},
 }
 FINISHED = frozenset({TicketStatus.CLOSED, TicketStatus.CANCELLED})
+# No replies, notes or attachments: finished, or resolved (the creator reopens it, or the team moves it back to
+# in progress, before anyone writes on it again).
+NO_MESSAGES = FINISHED | {TicketStatus.RESOLVED}
 
 
 def reference(ticket: Ticket) -> str:
@@ -525,8 +528,8 @@ class TicketService:
     def reply(self, principal: Principal, ticket_id: uuid.UUID, body: str, *, internal: bool = False) -> TicketMessage:
         ticket = self._locked(principal, ticket_id)
         duty = self.duty(principal)
-        if ticket.status in FINISHED:
-            raise ConflictError("This ticket is closed. Reopen it to reply.", code="INVALID_STATE")
+        if ticket.status in NO_MESSAGES:
+            raise ConflictError(f"This ticket is {ticket.status}. Reopen it to reply.", code="INVALID_STATE")
         if ticket.status == TicketStatus.AWAITING_CONFIRMATION:
             raise ConflictError("Confirm where the ticket goes first.", code="INVALID_STATE")
         self._refuse_if_forwarded_away(principal, ticket)
@@ -883,7 +886,7 @@ class TicketService:
         active = ticket.status in ACTIVE_STATUSES
         draft = ticket.status == TicketStatus.AWAITING_CONFIRMATION
         next_level = ESCALATES_TO.get(TicketLevel(ticket.level))
-        writable = not draft and ticket.status not in FINISHED and not read_only
+        writable = not draft and ticket.status not in NO_MESSAGES and not read_only
         return {
             "confirm": creator and draft,
             "reply": writable,
@@ -897,7 +900,7 @@ class TicketService:
             and works_queue(duty, ticket.level, ticket.organization_id, ticket.branch_id),
             "assign": manager and active,
             "priority": handler and not draft and ticket.status not in FINISHED,
-            "attach": ticket.status not in FINISHED and not read_only,
+            "attach": ticket.status not in NO_MESSAGES and not read_only,
         }
 
     def _last_replies(self, tickets: list[Ticket]) -> dict[uuid.UUID, LastReply]:
@@ -946,8 +949,8 @@ class TicketService:
 
     def attach(self, principal: Principal, ticket_id: uuid.UUID, *, file: BinaryIO, filename: str) -> TicketAttachment:
         ticket = self.get(principal, ticket_id)
-        if ticket.status in FINISHED:
-            raise ConflictError("This ticket is closed.", code="INVALID_STATE")
+        if ticket.status in NO_MESSAGES:
+            raise ConflictError(f"This ticket is {ticket.status}. Reopen it to add files.", code="INVALID_STATE")
         self._refuse_if_forwarded_away(principal, ticket)
         safe = (filename or "attachment").replace("/", "_").replace("\\", "_")[:300]
         extension = "." + safe.rsplit(".", 1)[-1].lower() if "." in safe else ""

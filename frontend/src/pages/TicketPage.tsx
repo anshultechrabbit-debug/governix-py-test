@@ -174,8 +174,10 @@ export function TicketPage() {
               </div>
             ) : !a.confirm && <p className="border-t border-line px-4 py-3 text-sm text-muted sm:px-5">
               {ticket.read_only && ticket.status !== "closed" && ticket.status !== "cancelled" ? `Read only: you forwarded this ticket to ${ticket.queue_name}.`
-                : ticket.status === "cancelled" ? "This ticket was cancelled." : "This ticket is closed."}
-              {mine && a.statuses.includes("open") && " Reopen it to reply."}</p>}
+                : ticket.status === "cancelled" ? "This ticket was cancelled."
+                : ticket.status === "resolved" ? "This ticket is resolved." : "This ticket is closed."}
+              {mine && a.statuses.includes("open") && " Reopen it to reply."}
+              {!mine && ticket.status === "resolved" && a.statuses.includes("in_progress") && " Move it back to In progress to reply."}</p>}
           </Card>
         </div>
 
