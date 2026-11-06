@@ -24,6 +24,7 @@ from app.modules.organizations.schema import (
     organization_read,
 )
 from app.modules.organizations.service import OrganizationService
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
 
@@ -75,8 +76,11 @@ def get_organization(organization_id: uuid.UUID, principal: MasterAdmin, service
 
 @router.patch("/{organization_id}", response_model=ApiResponse[OrganizationRead])
 def update_organization(
-    organization_id: uuid.UUID, body: OrganizationUpdate, principal: MasterAdmin, service: Service
+    organization_id: uuid.UUID, body: OrganizationUpdate, principal: MasterAdmin, service: Service,
+    confirm_code: StepUp,
 ):
+    if "status" in body.model_fields_set:  # suspending a bank signs all of it out; reactivating lets it back in
+        confirm_code("organization.status")
     return ok(organization_read(service.update(principal, organization_id, body)))
 
 
@@ -88,10 +92,14 @@ def organization_deletion_preview(organization_id: uuid.UUID, principal: MasterA
 
 @router.delete("/{organization_id}", response_model=ApiResponse[DeletionResult])
 def delete_organization(
-    organization_id: uuid.UUID, principal: MasterAdmin, service: Service, confirm: Annotated[bool, Query()] = False,
+    organization_id: uuid.UUID, principal: MasterAdmin, service: Service, confirm_code: StepUp,
+    confirm: Annotated[bool, Query()] = False,
 ):
     """Soft-delete the organisation and everything in it. Without confirm=true: 409
-    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes."""
+    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes. The real deletion needs
+    an authenticator code."""
+    if confirm:
+        confirm_code("organization.delete")
     return ok(service.delete(principal, organization_id, confirm=confirm))
 
 

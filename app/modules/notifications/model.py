@@ -25,6 +25,8 @@ class NotificationType(StrEnum):
     TICKET_ASSIGNED = "TICKET_ASSIGNED"
     TICKET_FORWARDED = "TICKET_FORWARDED"
     TICKET_SLA = "TICKET_SLA"
+    # Two-step sign-in set up, turned off, reset, or a backup code used: to the person and their managers.
+    SECURITY_ALERT = "SECURITY_ALERT"
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):

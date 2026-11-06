@@ -4,24 +4,18 @@ from typing import Annotated, Literal
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
-from app.core.security import MIN_PASSWORD_LENGTH
+from app.core.inputs import NewPassword, PersonName, Phone
 from app.modules.auth.permissions import Role
 from app.modules.branches.schema import NewBranch
 
 
-def _blank_is_none(value: str | None) -> str | None:
-    return (value or "").strip() or None
-
-
-# Digits with the usual separators: "+1 (555) 000-0000", "+91 98765 43210".
-Phone = Annotated[str | None, Field(max_length=50, pattern=r"^[0-9+()\-. ]*$"), AfterValidator(_blank_is_none)]
 
 
 class UserCreate(BaseModel):
     email: EmailStr
-    full_name: str = Field(min_length=2, max_length=200)
+    full_name: PersonName = Field(min_length=2, max_length=200)
     # Left out: the server generates a temporary password and returns it once.
-    password: str | None = Field(default=None, min_length=MIN_PASSWORD_LENGTH, max_length=1024)
+    password: NewPassword | None = None
     phone: Phone = None
     role: Role
     # Only the master admin chooses an organization; tenant admins create users in their own.
@@ -33,7 +27,7 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
-    full_name: str | None = Field(default=None, min_length=2, max_length=200)
+    full_name: PersonName | None = Field(default=None, min_length=2, max_length=200)
     email: EmailStr | None = None
     phone: Phone = None
     # Master admin only, and only for an account that never signed in.
@@ -46,7 +40,7 @@ class UserUpdate(BaseModel):
 
 class PasswordReset(BaseModel):
     # Left out: the server generates one and returns it once.
-    new_password: str | None = Field(default=None, min_length=MIN_PASSWORD_LENGTH, max_length=1024)
+    new_password: NewPassword | None = None
 
 
 class TemporaryPassword(BaseModel):
@@ -69,6 +63,8 @@ class UserRead(BaseModel):
     branch_name: str | None = None
     department_id: uuid.UUID | None
     is_active: bool
+    # Two-step sign-in (authenticator app) is on.
+    mfa_enabled: bool = False
     last_login_at: datetime | None
     created_at: datetime
 

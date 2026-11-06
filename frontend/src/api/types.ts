@@ -18,12 +18,21 @@ export interface Me {
   branch_name: string | null;
   department_id: UUID | null;
   permissions: string[];
+  /** Two-step sign-in (authenticator app) is on. */
+  mfa_enabled: boolean;
 }
 
-/** Login and refresh return only this; the tokens themselves arrive as HttpOnly cookies. */
+/** Login and refresh return only this; the tokens themselves arrive as HttpOnly cookies.
+ * `mfa_required`: the password was right; now send the authenticator code to /auth/mfa/verify. */
 export interface AuthSession {
   expires_in: number;
+  mfa_required?: boolean;
 }
+
+export interface MfaStatus { enabled: boolean; enabled_at: string | null; recovery_codes_left: number }
+/** Shown once while setting up: the QR code holds `otpauth_uri`; `secret` is for typing in by hand. */
+export interface MfaSetup { secret: string; otpauth_uri: string }
+export interface RecoveryCodes { codes: string[] }
 
 export type CategoryType =
   | "policy" | "circular" | "sop" | "guideline" | "manual" | "notice" | "process_document" | "form" | "faq"
@@ -389,7 +398,7 @@ export interface UserAssignments {
 export interface User {
   id: UUID; email: string; full_name: string; phone: string | null; role: Me["role"]; organization_id: UUID | null;
   organization_name: string | null; branch_id: UUID | null; branch_name: string | null; department_id: UUID | null;
-  is_active: boolean;
+  is_active: boolean; mfa_enabled: boolean;
   last_login_at: string | null; created_at: string;
 }
 /** POST /users: `temporary_password` is set, once, when the server generated it. */
@@ -644,6 +653,17 @@ export interface Routing {
   suggested_assignee: { id: UUID; name: string } | null;
 }
 
+export interface ForwardedBy {
+  by_id: UUID | null;
+  by_name: string | null;
+  by_role: Me["role"] | null;
+  from_queue: string | null;
+  to_queue: string | null;
+  reason: string | null;
+  escalation: boolean;
+  at: string;
+}
+
 export interface Ticket {
   id: UUID;
   number: number;
@@ -672,6 +692,10 @@ export interface Ticket {
   assigned_to_name: string | null;
   message_count: number;
   can_handle: boolean;
+  /** You forwarded it to a queue you do not work: you follow it, but cannot reply, add notes or attach. */
+  read_only: boolean;
+  /** Who forwarded it last, from where and why (null: never forwarded). */
+  forwarded: ForwardedBy | null;
   /** The support side's latest words: a reply or a resolution note. */
   last_reply_body: string | null;
   last_reply_by: string | null;
@@ -738,7 +762,7 @@ export interface ForwardResult {
   team: TicketTeam;
   queue_name: string;
   assigned_to_name: string | null;
-  /** null when the ticket left every queue the caller works or oversees. */
+  /** The ticket as you now see it: read-only once it left every queue you work. */
   ticket: TicketDetail | null;
 }
 

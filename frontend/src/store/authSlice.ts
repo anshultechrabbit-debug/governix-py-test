@@ -1,6 +1,6 @@
 import { createAsyncThunk, createSlice } from "@reduxjs/toolkit";
 import { api, hasSession } from "../api/client";
-import type { Me } from "../api/types";
+import type { AuthSession, Me } from "../api/types";
 import { queryClient } from "../lib/queryClient";
 
 type Status = "restoring" | "authenticated" | "anonymous";
@@ -15,8 +15,16 @@ const initialState: AuthState = { me: null, status: hasSession() ? "restoring" :
 /** Restore a session after reload from its cookies (the client refreshes an expired access cookie). */
 export const restoreSession = createAsyncThunk("auth/restore", async () => api.get<Me>("/auth/me"));
 
+/** Signs in, or resolves to null when the account uses two-step sign-in: then `verifyMfa` with the code. */
 export const login = createAsyncThunk("auth/login", async ({ email, password }: { email: string; password: string }) => {
-  await api.post("/auth/login", { email, password }); // sets the session cookies
+  const session = await api.post<AuthSession>("/auth/login", { email, password }); // sets the session cookies
+  if (session.mfa_required) return null;
+  return api.get<Me>("/auth/me");
+});
+
+/** The code step: a code from the authenticator app, or a backup code. */
+export const verifyMfa = createAsyncThunk("auth/verifyMfa", async (code: string) => {
+  await api.post<AuthSession>("/auth/mfa/verify", { code });
   return api.get<Me>("/auth/me");
 });
 
@@ -29,6 +37,10 @@ const authSlice = createSlice({
   name: "auth",
   initialState,
   reducers: {
+    /** After turning two-step sign-in on or off in the account menu. */
+    setMfaEnabled(state, action: { payload: boolean }) {
+      if (state.me) state.me.mfa_enabled = action.payload;
+    },
     sessionExpired(state) {
       queryClient.clear();
       state.me = null;
@@ -46,6 +58,11 @@ const authSlice = createSlice({
         state.status = "anonymous";
       })
       .addCase(login.fulfilled, (state, action) => {
+        if (!action.payload) return; // the code step comes first
+        state.me = action.payload;
+        state.status = "authenticated";
+      })
+      .addCase(verifyMfa.fulfilled, (state, action) => {
         state.me = action.payload;
         state.status = "authenticated";
       })
@@ -56,5 +73,5 @@ const authSlice = createSlice({
   },
 });
 
-export const { sessionExpired } = authSlice.actions;
+export const { sessionExpired, setMfaEnabled } = authSlice.actions;
 export default authSlice.reducer;

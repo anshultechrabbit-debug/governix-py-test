@@ -21,6 +21,8 @@ import {
 } from "../components/ui";
 import { formatDateTime } from "../lib/format";
 import { useAuth, useToast } from "../store/hooks";
+import { ResetTwoStepButton } from "../components/TwoStepDialog";
+import { PasswordRules, passwordOk } from "../components/PasswordRules";
 
 /** The spec names the four roles; the API's `department_user` is simply "User". */
 const ROLE_LABEL: Record<User["role"], string> = {
@@ -222,6 +224,7 @@ export function UsersPage() {
                     >
                       <KeyRound className="size-3.5" />
                     </Button>
+                    {user.id !== me?.id && <ResetTwoStepButton user={user} />}
                     {user.id !== me?.id && (
                       <Button
                         variant="ghost"
@@ -256,7 +259,7 @@ export function UsersPage() {
               disabled={
                 !email.trim() ||
                 !fullName.trim() ||
-                password.length < 12 ||
+                !passwordOk(password, { email, name: fullName }) ||
                 (isMasterAdmin && !selectedOrgId) ||
                 (needsBranch && !selectedBranchId)
               }
@@ -284,14 +287,14 @@ export function UsersPage() {
               onChange={(e) => setEmail(e.target.value)}
             />
           </Field>
-          <Field label="Temporary password" hint="Minimum 12 characters">
+          <Field label="Temporary password">
             <PasswordInput
               required
-              minLength={12}
               placeholder="••••••••••••"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
             />
+            <PasswordRules password={password} email={email} name={fullName} />
           </Field>
           <Field label="Role">
             <Select value={role} onChange={(e) => setRole(e.target.value)}>
@@ -358,7 +361,7 @@ export function UsersPage() {
               type="submit"
               form="reset-password-form"
               loading={resetting}
-              disabled={newPassword.length < 12}
+              disabled={!passwordOk(newPassword, { email: resetModalUser?.email, name: resetModalUser?.full_name })}
             >
               Reset password
             </Button>
@@ -366,14 +369,14 @@ export function UsersPage() {
         }
       >
         <form id="reset-password-form" onSubmit={handleResetPassword} className="space-y-4">
-          <Field label="New password" hint="Minimum 12 characters. Revokes all current sessions.">
+          <Field label="New password" hint="Revokes all current sessions.">
             <PasswordInput
               required
-              minLength={12}
               placeholder="••••••••••••"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
             />
+            <PasswordRules password={newPassword} email={resetModalUser?.email} name={resetModalUser?.full_name} />
           </Field>
         </form>
       </Modal>

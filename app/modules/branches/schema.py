@@ -2,6 +2,7 @@ import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.inputs import Line, Name
 
 CODE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,49}$"
 # PIN codes and postal codes: "400001", "94105", "94105-1234", "SW1A 1AA".
@@ -11,15 +12,15 @@ POSTAL_CODE_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 -]{1,18}[A-Za-z0-9]$"
 class BranchAddress(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    street_address: str = Field(min_length=2, max_length=300)
-    state: str = Field(min_length=2, max_length=100)
+    street_address: Line = Field(min_length=2, max_length=300)
+    state: Name = Field(min_length=2, max_length=100)
     postal_code: str = Field(pattern=POSTAL_CODE_PATTERN)
 
 
 class NewBranch(BranchAddress):
     """A branch created with its Branch Manager (Add user); its code is made from the name."""
 
-    name: str = Field(min_length=2, max_length=200)
+    name: Name = Field(min_length=2, max_length=200)
 
 
 class BranchCreate(NewBranch):
@@ -29,9 +30,9 @@ class BranchCreate(NewBranch):
 class BranchUpdate(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    name: str | None = Field(default=None, min_length=2, max_length=200)
-    street_address: str | None = Field(default=None, min_length=2, max_length=300)
-    state: str | None = Field(default=None, min_length=2, max_length=100)
+    name: Name | None = Field(default=None, min_length=2, max_length=200)
+    street_address: Line | None = Field(default=None, min_length=2, max_length=300)
+    state: Name | None = Field(default=None, min_length=2, max_length=100)
     postal_code: str | None = Field(default=None, pattern=POSTAL_CODE_PATTERN)
     is_active: bool | None = None
 

@@ -189,8 +189,20 @@ CLOSED_CLASS_TERMS = frozenset(
     # Comparison direction words: 'below 650' or 'above 75 lakh' frame the comparison but
     # the document states the rule as 'minimum 650' or 'up to 75 lakh' — the direction word
     # itself never appears in evidence as a searchable subject term.
-    "below above under over within beyond exceeds exceed exceeding".split()
+    "below above under over within beyond exceeds exceed exceeding "
+    # Interjections and discourse markers ("okay then tell me about ...", "hmm, what is ...", "yeah but ..."):
+    # they answer or pace the conversation and name nothing. No document uses them, so the model's framing
+    # words can never drop them (RAGService._framing keeps every word no document uses).
+    "ok okay okey okk alright hmm hmmm umm um uh oh ah yeah yep yup nope nah "
+    # where the conversation is ("explain it to me here"): "there" is a stop word already
+    "here "
+    # Informal spellings of function words ("which kinda policy", "I wanna know", "pls tell me abt ..."): the
+    # words they stand for ("kind of", "want to", "please", "about") are framing already.
+    "kinda sorta gonna wanna gotta lemme dunno hafta pls plz abt thx thnx".split()
 )
+# "what sort of fee", "which variety of loans", "the forms of security": a classifier noun before "of" names
+# the kind of answer, and the noun after it is the subject ("kind", "type" and "category" are QUESTION_TERMS).
+_CLASSIFIER_OF = re.compile(r"\b(?:sorts?|variet(?:y|ies)|forms?|class(?:es)?)\s+of\b", re.I)
 # Questions about the document itself: its title, publisher, date, legal basis.
 _DOCUMENT_QUESTION = re.compile(
     r"\bthis\s+(?:document|plan|policy|report|circular|manual|guideline|notification|publication)\b"
@@ -198,9 +210,69 @@ _DOCUMENT_QUESTION = re.compile(
     r"|\btitle\s+of\b|\bname\s+of\s+(?:this|the)\s+(?:document|plan|policy|report|circular|manual|guideline|file)\b"
     r"|\bpublish(?:ed|er|ing)?\b|\bpublication\b|\bissu(?:ed|ing)\s+(?:by|authority)\b"
     r"|\blegal\s+basis\b|\bunder\s+which\s+(?:act|law|section)\b|\bwhich\s+section\s+of\b"
-    r"|\b(?:type|kind|sort)\s+of\s+(?:document|policy|circular|report)\b|\bwhat\s+is\s+(?:this|the)\s+document\s+about\b",
+    # "what kind of policy", "what kind of the policy", "which kinda policy", "types of documents"
+    r"|\b(?:(?:type|kind|sort)s?\s+of|kinda|sorta)\s+(?:(?:the|a|an|this)\s+)?(?:documents?|polic(?:y|ies)|circulars?|reports?)\b"
+    r"|\bwhat\s+is\s+(?:this|the)\s+document\s+about\b",
     re.I,
 )
+
+# What the reader calls the documents themselves: "the policy", "these documents", "my files".
+_DOCUMENT_NOUN = r"(?:documents?|docs?|polic(?:y|ies)|files?|pdfs?)"
+_DOCUMENT_WORD = re.compile(rf"\b{_DOCUMENT_NOUN}\b", re.I)
+# Where a short clause ends: punctuation or the end, after any words that only add when or where ("... to me
+# here?", "... read so far?"), which belong to the relation.
+_CLAUSE_END = (r"(?:\s+(?:here|now|please|currently|yet|so\s+far|till\s+now|until\s+now|right\s+now))*"
+               r"(?=\s*(?:[?.!,;\n]|$))")
+# Which documents the reader holds or the assistant has, asked through who they belong to, whatever verb (and
+# however spelt) relates them:
+#   "documents assigned to me", "which policy is assign on me", "the policies available for us",
+#   "what documents do you have", "which policies can I ask about", "what files have you read so far",
+#   "my documents", "your policies".
+_HELD_BY_READER = re.compile(
+    rf"\b{_DOCUMENT_NOUN}\s+(?:(?:is|are|was|were|been|being|has\s+been|have\s+been|get|got)\s+)?(?:\w+\s+){{0,2}}?"
+    rf"(?:to|on|for|with)\s+(?:me|us|myself)\b{_CLAUSE_END}",
+    re.I,
+)
+_HELD_BY_PARTY = re.compile(
+    rf"\b{_DOCUMENT_NOUN}\s+(?:do|does|did|can|could|have|has|will|would|am|are|should|may)\s+(?:you|i|we)\b"
+    rf"(?:\s+\w+){{1,2}}?(?:\s+(?:about|to|from|on|with|in|of|for|into))?{_CLAUSE_END}",
+    re.I,
+)
+_OWNED = re.compile(rf"\b(?:my|your|our)\s+(?:own\s+|assigned\s+)?{_DOCUMENT_NOUN}\b", re.I)
+_ASKS_WHICH = re.compile(r"\b(?:which|what|list|show|name|tell\s+me|give\s+me|how\s+many)\b", re.I)
+# The request around it ("show me my documents", "list the policies"): how to answer, not what about.
+_REQUEST = re.compile(r"\b(?:show|tell|give|send|share)\s+(?:me|us)\b|^\W*(?:list|show|name)\b", re.I)
+# Documents a customer hands in ("What documents do I need?", "documents to submit for KYC", "which documents are
+# mandatory for me?"): what a rule is about, never a request for the catalogue.
+_SUBMITTED = re.compile(
+    r"\b(?:need|needs|needed|require[sd]?|requiring|requirements?|submit\w*|provide[sd]?|providing|furnish\w*|"
+    r"bring|carry|attach\w*|produce[sd]?|upload\w*|keep|kept|retain\w*|maintain\w*|sign\w*|fill\w*|collect\w*|"
+    r"verif\w*|obtain\w*|mandatory|necessary|compulsory|essential|accepted|acceptable|valid)\b",
+    re.I,
+)
+
+
+def documents_held(question: str) -> str | None:
+    """The question without the words that tie the documents to the reader or the assistant, when it asks which
+    documents those are ("Which is the documents assign on me?" -> "Which is the ?"): the relation is framing,
+    whatever verb or spelling the reader used. None when it does not ask that, or asks which documents a
+    customer must hand in. RAGService decides whether anything else is asked."""
+    if not (_DOCUMENT_WORD.search(question) and _ASKS_WHICH.search(question)) or _SUBMITTED.search(question):
+        return None
+    rest = question
+    for pattern in (_HELD_BY_READER, _HELD_BY_PARTY, _OWNED):
+        rest = pattern.sub(" ", rest)
+    return _REQUEST.sub(" ", rest) if rest != question else None
+
+
+def names_documents(question: str) -> bool:
+    """The question refers to the documents themselves ("the policy", "these documents")."""
+    return bool(_DOCUMENT_WORD.search(question))
+
+
+def asks_for_submitted_documents(question: str) -> bool:
+    """ "What documents do I need?", "Which documents must be submitted?": documents a rule asks for."""
+    return bool(_DOCUMENT_WORD.search(question) and _SUBMITTED.search(question))
 AMENDING = {"AMENDS", "SUPERSEDES", "REPLACES", "CLARIFIES"}
 
 
@@ -287,6 +359,7 @@ def key_terms(question: str) -> list[str]:
     question = _CLAIM_TO_CONFIRM.sub(" ", question)
     # "in March 2024 and in March 2026", "on 15 June 2025": a date chooses the version; no passage repeats it.
     question = MONTH_YEAR.sub(" ", re.sub(DATE_FRAGMENT, " ", question, flags=re.I))
+    question = _CLASSIFIER_OF.sub(" ", question)  # "what sort of fee": the subject is the fee
     given = _readers_figures(question)
     return [
         t for t in query_terms(question)

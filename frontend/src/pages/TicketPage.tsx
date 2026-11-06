@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpCircle, Download, Forward, Lock, Paperclip, Send, UserCheck } from "lucide-react";
+import { ArrowLeft, ArrowUpCircle, Download, Eye, Forward, Lock, Paperclip, Send, UserCheck } from "lucide-react";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api/client";
@@ -72,6 +72,8 @@ export function TicketPage() {
   const staffSide = ticket.can_handle;
   const active = ACTIVE.includes(ticket.status);
   const platform = me?.role === "master_admin" || me?.role === "support_agent";
+  // Who sent it here, shown to the team now handling it (not to the person who forwarded it).
+  const forwardedIn = staffSide && ticket.forwarded && ticket.forwarded.by_id !== me?.id ? ticket.forwarded : null;
 
   return (
     <>
@@ -94,6 +96,7 @@ export function TicketPage() {
         </div>
         <div className="flex flex-wrap gap-2">
           <SlaBadge dueAt={ticket.due_at} overdue={ticket.overdue} active={active} />
+          {ticket.read_only && <Badge tone="neutral"><Eye className="size-3" />Read only</Badge>}
           <Badge tone={PRIORITY_TONE[ticket.priority]} className="capitalize">{ticket.priority} priority</Badge>
           <TicketStatusBadge status={ticket.status} staffSide={staffSide} />
         </div>
@@ -103,6 +106,37 @@ export function TicketPage() {
         <Card className="mb-5 p-4 sm:p-5">
           <p className="mb-3 text-sm text-muted">This ticket has not been sent yet. Confirm where it should go.</p>
           <RoutingPanel ticket={ticket} onDone={(sent) => queryClient.setQueryData(["support", "ticket", id], sent)} />
+        </Card>
+      )}
+
+      {ticket.read_only && (
+        <Card className="mb-5 flex items-start gap-3 p-4 sm:p-5">
+          <Eye className="mt-0.5 size-4 shrink-0 text-muted" />
+          <p className="text-sm text-ink-soft">
+            You forwarded this ticket. It is now with <span className="font-medium text-ink">{ticket.queue_name}</span>
+            {ticket.assigned_to_name ? <> ({ticket.assigned_to_name})</> : null}. You can follow its progress here, but only that team
+            replies or acts on it now.
+          </p>
+        </Card>
+      )}
+
+      {forwardedIn && (
+        <Card className="mb-5 border-brand-500/30 bg-brand-50 p-4 sm:p-5">
+          <p className="flex flex-wrap items-center gap-1.5 text-sm">
+            {forwardedIn.escalation ? <ArrowUpCircle className="size-4 text-brand-700" /> : <Forward className="size-4 text-brand-700" />}
+            <span>
+              {forwardedIn.escalation ? "Escalated" : "Forwarded"} to {ticket.assigned_to_id === me?.id ? "you" : "this queue"} by{" "}
+              <span className="font-medium">{forwardedIn.by_name ?? "a former staff member"}</span>
+              {forwardedIn.by_role ? ` (${ROLE[forwardedIn.by_role] ?? forwardedIn.by_role})` : ""}
+              {forwardedIn.from_queue ? <> from <span className="font-medium">{forwardedIn.from_queue}</span></> : null}
+              {" "}· {formatDateTime(forwardedIn.at)}
+            </span>
+          </p>
+          {forwardedIn.reason && <p className="mt-2 whitespace-pre-wrap text-sm italic text-ink-soft">“{forwardedIn.reason}”</p>}
+          <p className="mt-2 text-xs text-muted">
+            Your reply goes to {ticket.created_by_name ?? "the requester"}.
+            {forwardedIn.by_id !== ticket.created_by_id && ` ${forwardedIn.by_name ?? "The person who forwarded it"} follows the ticket and sees your reply, but no longer replies on it.`}
+          </p>
         </Card>
       )}
 
@@ -139,7 +173,8 @@ export function TicketPage() {
                 </div>
               </div>
             ) : !a.confirm && <p className="border-t border-line px-4 py-3 text-sm text-muted sm:px-5">
-              {ticket.status === "cancelled" ? "This ticket was cancelled." : "This ticket is closed."}
+              {ticket.read_only && ticket.status !== "closed" && ticket.status !== "cancelled" ? `Read only: you forwarded this ticket to ${ticket.queue_name}.`
+                : ticket.status === "cancelled" ? "This ticket was cancelled." : "This ticket is closed."}
               {mine && a.statuses.includes("open") && " Reopen it to reply."}</p>}
           </Card>
         </div>
@@ -210,6 +245,7 @@ export function TicketPage() {
         setForwarding(null);
         void queryClient.invalidateQueries({ queryKey: ["support"] });
         toast("ok", `${result.reference} is now with ${result.queue_name}${result.assigned_to_name ? ` (${result.assigned_to_name})` : ""}.`);
+        // You keep following it, read-only, under "Forwarded by me".
         if (result.ticket) queryClient.setQueryData(["support", "ticket", id], result.ticket);
         else navigate("/support");
       }} />

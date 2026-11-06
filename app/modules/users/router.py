@@ -14,11 +14,14 @@ from app.modules.users.schema import (
     PasswordReset, TemporaryPassword, UserCreate, UserCreated, UserRead, UserStats, UserStatus, UserUpdate,
 )
 from app.modules.users.service import UserService
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
 UserAdmin = Annotated[Principal, Depends(require(Permission.USERS_MANAGE))]
+# Changing these needs an authenticator code (auth/step_up.py).
+SENSITIVE_USER_FIELDS = frozenset({"email", "role", "is_active", "organization_id", "branch_id", "department_id"})
 
 
 def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
@@ -35,7 +38,8 @@ def read(user: User, organization_name: str | None, branch_name: str | None) -> 
 
 
 @router.post("", response_model=ApiResponse[UserCreated], status_code=201)
-def create_user(body: UserCreate, principal: UserAdmin, service: Service):
+def create_user(body: UserCreate, principal: UserAdmin, service: Service, confirm_code: StepUp):
+    confirm_code("user.create")
     user, temporary_password = service.create(principal, body)
     created = read(user, *service.names(user))
     return ok(UserCreated(**created.model_dump(), temporary_password=temporary_password))
@@ -66,17 +70,31 @@ def get_user(user_id: uuid.UUID, principal: CurrentPrincipal, service: Service):
 
 
 @router.patch("/{user_id}", response_model=ApiResponse[UserRead])
-def update_user(user_id: uuid.UUID, body: UserUpdate, principal: UserAdmin, service: Service):
+def update_user(user_id: uuid.UUID, body: UserUpdate, principal: UserAdmin, service: Service, confirm_code: StepUp):
+    # A name or phone change is routine; who the account is, what it may do and whether it works are not.
+    if body.model_fields_set & SENSITIVE_USER_FIELDS:
+        confirm_code("user.update")
     user = service.update(principal, user_id, body)
     return ok(read(user, *service.names(user)))
 
 
 @router.delete("/{user_id}", response_model=ApiResponse[dict])
-def delete_user(user_id: uuid.UUID, principal: UserAdmin, service: Service):
+def delete_user(user_id: uuid.UUID, principal: UserAdmin, service: Service, confirm_code: StepUp):
+    confirm_code("user.delete")
     service.delete(principal, user_id)
     return ok({})
 
 
 @router.post("/{user_id}/reset-password", response_model=ApiResponse[TemporaryPassword])
-def reset_password(user_id: uuid.UUID, body: PasswordReset, principal: UserAdmin, service: Service):
+def reset_password(user_id: uuid.UUID, body: PasswordReset, principal: UserAdmin, service: Service,
+                   confirm_code: StepUp):
+    confirm_code("user.password_reset")
     return ok(TemporaryPassword(temporary_password=service.reset_password(principal, user_id, body.new_password)))
+
+
+@router.post("/{user_id}/reset-mfa", response_model=ApiResponse[UserRead])
+def reset_mfa(user_id: uuid.UUID, principal: UserAdmin, service: Service, confirm_code: StepUp):
+    """Turn off a user's two-step sign-in (lost phone). They are signed out everywhere and may set it up again."""
+    confirm_code("user.mfa_reset")
+    user = service.reset_mfa(principal, user_id)
+    return ok(read(user, *service.names(user)))

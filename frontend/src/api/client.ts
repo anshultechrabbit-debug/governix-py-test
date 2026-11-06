@@ -13,7 +13,7 @@ const BASE = "/api";
 const CSRF_COOKIE = "governix_csrf";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // Their 401 means a wrong password or no session, never "refresh and retry".
-const NO_REFRESH = ["/auth/login", "/auth/refresh", "/auth/logout"];
+const NO_REFRESH = ["/auth/login", "/auth/refresh", "/auth/logout", "/auth/mfa/verify"];
 
 export class ApiError extends Error {
   constructor(
@@ -32,6 +32,23 @@ let onSessionExpired: (() => void) | null = null;
 
 export function setSessionExpiredHandler(handler: () => void) {
   onSessionExpired = handler;
+}
+
+/** Important actions need a fresh authenticator code (the server answers 403 STEP_UP_*). The handler shows the
+ * prompt and resolves to the code, or null when the person cancels. For STEP_UP_SETUP_REQUIRED it explains and
+ * resolves to null: the action is refused until two-step sign-in is on. */
+export type StepUpHandler = (reason: string, message: string) => Promise<string | null>;
+let onStepUp: StepUpHandler | null = null;
+const STEP_UP_HEADER = "X-Authenticator-Code";
+const STEP_UP_ASK = new Set(["STEP_UP_REQUIRED", "STEP_UP_INVALID", "STEP_UP_CODE_USED"]);
+
+export function setStepUpHandler(handler: StepUpHandler | null) {
+  onStepUp = handler;
+}
+
+async function errorOf(response: Response): Promise<{ reason?: string; message?: string }> {
+  const body = await response.clone().json().catch(() => null);
+  return body?.error ?? {};
 }
 
 function csrfToken(): string | null {
@@ -79,13 +96,33 @@ async function refresh(): Promise<boolean> {
 }
 
 async function raw(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
+  let response = await send(path, init, retry);
+  // An important action: ask for the authenticator code and send it again with it, until it is accepted or the
+  // person cancels. Nothing was done by the refused request.
+  for (let attempt = 0; attempt < 5 && response.status === 403 && onStepUp; attempt++) {
+    const { reason, message } = await errorOf(response);
+    if (reason === "STEP_UP_SETUP_REQUIRED") {
+      await onStepUp(reason, message ?? "");
+      break;
+    }
+    if (!reason || !STEP_UP_ASK.has(reason)) break;
+    const code = await onStepUp(reason, message ?? "");
+    if (!code) break;
+    const headers = new Headers(init.headers);
+    headers.set(STEP_UP_HEADER, code);
+    response = await send(path, { ...init, headers }, retry);
+  }
+  return response;
+}
+
+async function send(path: string, init: RequestInit, retry: boolean): Promise<Response> {
   const response = await fetch(`${BASE}${path}`, { ...init, headers: withCsrf(init) });
   if (response.status === 401 && retry && hasSession() && !NO_REFRESH.some((p) => path.startsWith(p))) {
-    if (await refresh()) return raw(path, init, false);
+    if (await refresh()) return send(path, init, false);
     onSessionExpired?.();
   }
   // Another tab renewed the session between reading the CSRF cookie and sending: send it again.
-  if (response.status === 403 && retry && (await reasonOf(response)) === "CSRF_FAILED") return raw(path, init, false);
+  if (response.status === 403 && retry && (await reasonOf(response)) === "CSRF_FAILED") return send(path, init, false);
   return response;
 }
 

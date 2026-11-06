@@ -12,6 +12,7 @@ from app.modules.auth.permissions import Permission, Principal
 from app.modules.branches.schema import BranchCreate, BranchRead, BranchUpdate
 from app.modules.branches.service import BranchService
 from app.modules.organizations.schema import DeletionPreview, DeletionResult
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/branches", tags=["branches"])
 
@@ -56,8 +57,12 @@ def branch_deletion_preview(branch_id: uuid.UUID, principal: BranchAdmin, servic
 
 @router.delete("/{branch_id}", response_model=ApiResponse[DeletionResult])
 def delete_branch(
-    branch_id: uuid.UUID, principal: BranchAdmin, service: Service, confirm: Annotated[bool, Query()] = False,
+    branch_id: uuid.UUID, principal: BranchAdmin, service: Service, confirm_code: StepUp,
+    confirm: Annotated[bool, Query()] = False,
 ):
     """Soft-delete the branch and everything in it. Without confirm=true: 409
-    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes."""
+    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes. The real deletion needs
+    an authenticator code."""
+    if confirm:
+        confirm_code("branch.delete")
     return ok(service.delete(principal, branch_id, confirm=confirm))

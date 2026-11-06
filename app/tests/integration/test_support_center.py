@@ -326,7 +326,10 @@ def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master)
     assert moved.status_code == 200, moved.text
     result = moved.json()["data"]
     assert (result["queue_name"], result["assigned_to_name"]) == ("Technical Support", "Priya")
-    assert result["ticket"] is None  # it left Asha's queue: she no longer sees it
+    # It left Asha's queue: she follows it, read-only.
+    assert result["ticket"]["read_only"] is True and result["ticket"]["can_handle"] is False
+    assert not any(result["ticket"]["actions"][a] for a in ("reply", "note", "attach", "escalate", "take", "assign"))
+    assert result["ticket"]["actions"]["statuses"] == [] and result["ticket"]["actions"]["forward"] == []
     priya = agent_login(client, db, agent)
     moved = priya.get(f"/support/tickets/{ticket['id']}").json()["data"]
     assert (moved["level"], moved["team"], moved["status"]) == ("platform", "technical", "open")
@@ -336,21 +339,44 @@ def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master)
     assert entry["data"]["to"]["level"] == "platform" and entry["data"]["confirmed"] is True
     assert not any(n["type"] == "TICKET_FORWARDED" for n in notifications(staff))  # not told of her own action
     assert any(n["type"] == "TICKET_FORWARDED" for n in notifications(user))
-    assert any(n["type"] == "TICKET_ASSIGNED" for n in notifications(priya))
-    # Asha no longer works it; the branch manager still follows it (their branch's ticket).
-    assert staff.get(f"/support/tickets/{ticket['id']}").status_code == 404
-    assert manager.get(f"/support/tickets/{ticket['id']}").json()["data"]["can_handle"] is False
+    # Priya is told who forwarded it, from where and why, and sees it on the ticket.
+    told = [n for n in notifications(priya) if n["type"] == "TICKET_ASSIGNED"]
+    assert told and told[0]["title"].startswith("Forwarded to you")
+    assert told[0]["body"].startswith("Asha forwarded it from Branch Support") and body["reason"] in told[0]["body"]
+    assert moved["forwarded"]["by_name"] == "Asha" and moved["forwarded"]["reason"] == body["reason"]
+    assert moved["forwarded"]["from_queue"].startswith("Branch Support") and moved["forwarded"]["to_queue"] == "Technical Support"
+    assert moved["read_only"] is False and moved["actions"]["reply"] is True
+    # Asha no longer works it: she reads it (and the reply Priya writes) but cannot reply or attach.
+    assert priya.post(f"/support/tickets/{ticket['id']}/messages", json={"body": "Looking at the logs."}).status_code == 201
+    followed = staff.get(f"/support/tickets/{ticket['id']}")
+    assert followed.status_code == 200 and followed.json()["data"]["read_only"] is True
+    assert "Looking at the logs." in [e["body"] for e in followed.json()["data"]["timeline"]]
+    refused = staff.post(f"/support/tickets/{ticket['id']}/messages", json={"body": "One more thing"})
+    assert refused.status_code == 403 and refused.json()["error"]["reason"] == "TICKET_FORWARDED_AWAY"
+    assert staff.post(f"/support/tickets/{ticket['id']}/attachments",
+                      files={"file": ("shot.png", io.BytesIO(PNG), "image/png")}).status_code == 403
+    box = staff.get("/support/tickets?box=forwarded").json()["data"]["items"]
+    assert [t["id"] for t in box] == [ticket["id"]] and box[0]["read_only"] is True
+    assert ticket["id"] not in [t["id"] for t in staff.get("/support/tickets?box=queue").json()["data"]["items"]]
+    # The branch manager still follows it (their branch's ticket); they did not forward it, so not read-only.
+    watched = manager.get(f"/support/tickets/{ticket['id']}").json()["data"]
+    assert watched["can_handle"] is False and watched["read_only"] is False
 
     # The platform sends it back down; it cannot go "up" from the top.
     assert priya.post(f"/support/tickets/{ticket['id']}/forward",
                       json={"to": "escalate", "reason": "higher", "confirmed": True}).status_code == 422
     back = priya.post(f"/support/tickets/{ticket['id']}/forward",
                       json={"to": "branch", "reason": "Branch procedure, not software", "confirmed": True}).json()["data"]
-    assert back["level"] == "branch" and back["assigned_to_name"] == "Asha" and back["ticket"] is None
+    assert back["level"] == "branch" and back["assigned_to_name"] == "Asha" and back["ticket"]["read_only"] is True
+    # Back in Asha's queue: hers to answer again, not read-only.
+    mine_again = staff.get(f"/support/tickets/{ticket['id']}").json()["data"]
+    assert mine_again["read_only"] is False and mine_again["actions"]["reply"] is True
+    assert mine_again["forwarded"]["by_name"] == "Priya"
+    assert staff.get("/support/tickets?box=forwarded").json()["data"]["items"] == []
     # When someone else moves Asha's ticket, she is told.
     up = manager.post(f"/support/tickets/{ticket['id']}/forward",
                       json={"to": "escalate", "reason": "Needs Head Office approval", "confirmed": True}).json()["data"]
-    assert up["level"] == "organization" and up["ticket"]["can_handle"] is False
+    assert up["level"] == "organization" and up["ticket"]["can_handle"] is False and up["ticket"]["read_only"] is True
     assert any(n["type"] == "TICKET_FORWARDED" for n in notifications(staff))
     db.expire_all()
     from app.modules.audit.model import AuditEvent

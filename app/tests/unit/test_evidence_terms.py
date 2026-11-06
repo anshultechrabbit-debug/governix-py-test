@@ -2,8 +2,8 @@
 import pytest
 
 from app.modules.rag.evidence import (
-    applies_to_reader, asks_to_confirm, coverage_of, is_document_question, key_terms, readers_situation,
-    situation_terms,
+    applies_to_reader, asks_for_submitted_documents, asks_to_confirm, coverage_of, documents_held,
+    is_document_question, key_terms, names_documents, readers_situation, situation_terms,
 )
 from app.modules.rag.query_plan import QueryClass, plan_query
 
@@ -272,3 +272,69 @@ def test_a_claim_to_confirm_is_recognised_and_its_frame_is_not_required(question
 @pytest.mark.parametrize("question", ["Can you confirm the processing fee?", "How do I verify my income?"])
 def test_asking_for_a_figure_is_not_a_claim_to_confirm(question):
     assert not asks_to_confirm(question)
+
+
+# --- words that name nothing (v74) -------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("question, filler", [
+    ("okay then tell me about the mortgage loan policy", "okay"),
+    ("ok what is the LTV?", "ok"),
+    ("hmm, what is the processing fee?", "hmm"),
+    ("yeah but what is the prepayment charge?", "yeah"),
+    ("which kinda loans have a moratorium?", "kinda"),
+    ("pls tell me abt the prepayment charge", "pls"),
+    ("pls tell me abt the prepayment charge", "abt"),
+    ("can you explain the foreclosure charge to me here", "here"),
+])
+def test_interjections_and_informal_function_words_are_never_the_subject(question, filler):
+    terms = key_terms(question)
+    assert filler not in terms and terms  # the real subject is still required
+
+
+@pytest.mark.parametrize("question, subject", [
+    ("What sort of fee applies on foreclosure?", "fee"),
+    ("Which variety of loans has a moratorium?", "loans"),
+    ("What forms of security are accepted?", "security"),
+])
+def test_a_classifier_before_of_frames_the_noun_after_it(question, subject):
+    terms = key_terms(question)
+    assert subject in terms and not {"sort", "variety", "forms"} & set(terms)
+
+
+@pytest.mark.parametrize("question", [
+    "Which is the documents assign on me ?",
+    "which kinda of policy to assign on me",
+    "which kind of policy is assign to me?",
+    "Which documents are assigned to me?",
+    "which documents are assign to me ?\ncan you please explain on me here",
+    "What policies are available for me?",
+    "What documents do you have?",
+    "Which policies can I ask about?",
+    "What files have you read so far?",
+    "How many policies do I have access to?",
+    "Show me my documents",
+])
+def test_which_documents_the_reader_holds_is_asked_through_any_verb(question):
+    rest = documents_held(question)
+    assert rest is not None and not key_terms(rest)
+
+
+@pytest.mark.parametrize("question", [
+    "What documents do I need?",
+    "What documents do I need to submit for a home loan?",
+    "Which documents are mandatory for me?",
+    "What documents are needed for a home loan?",
+    "What is the prepayment charge?",
+    "Which policies apply to me as a salaried borrower?",
+])
+def test_documents_a_customer_hands_in_or_other_subjects_are_not_the_catalogue(question):
+    rest = documents_held(question)
+    assert rest is None or key_terms(rest)
+
+
+def test_documents_to_hand_in_are_a_subject_and_the_corpus_by_name_is_not():
+    assert asks_for_submitted_documents("What documents do I need?")
+    assert not asks_for_submitted_documents("What is the policy?")
+    assert names_documents("what kind of the policy") and names_documents("what is the documents")
+    assert not key_terms("what kind of the policy") and not key_terms("what is the documents")
+    assert is_document_question("what kind of the policy is this") and is_document_question("which kinda policy is it")

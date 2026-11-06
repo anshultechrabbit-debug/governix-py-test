@@ -14,6 +14,7 @@ import { UploadActivity, UploadJobModal } from "../BulkUpload";
 import { Spinner } from "../ui";
 import { NotificationBell } from "../Notifications";
 import { UserMenu } from "./UserMenu";
+import { StepUpPrompt } from "../TwoStepDialog";
 
 interface NavItem {
   to: string;
@@ -186,6 +187,8 @@ export function AppLayout() {
       </div>
       {/* The live upload queue follows the person across every page (spec §7–8). */}
       <UploadJobModal />
+      {/* Asks for the authenticator code when an important action needs one. */}
+      <StepUpPrompt />
     </div>
   );
 }

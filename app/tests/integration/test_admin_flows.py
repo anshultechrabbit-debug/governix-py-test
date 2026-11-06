@@ -21,10 +21,10 @@ def test_full_onboarding_flow(client, db):
 
     platform.post("/users", json={
         "email": "admin@axis.example", "full_name": "Org Admin",
-        "password": "long-enough-password", "role": "org_admin", "organization_id": org_id,
+        "password": "Long-enough-Passw0rd!", "role": "org_admin", "organization_id": org_id,
     })
     admin_login = client.post("/auth/login", json={
-        "email": "admin@axis.example", "password": "long-enough-password",
+        "email": "admin@axis.example", "password": "Long-enough-Passw0rd!",
     })
     headers = session_headers(admin_login.cookies)
 
@@ -42,11 +42,11 @@ def test_full_onboarding_flow(client, db):
 
     manager = client.post("/users", headers=headers, json={
         "email": "manager@axis.example", "full_name": "Branch Manager",
-        "password": "long-enough-password", "role": "branch_manager", "branch_id": branch_id,
+        "password": "Long-enough-Passw0rd!", "role": "branch_manager", "branch_id": branch_id,
     })
     assert manager.status_code == 201, manager.text
     assert client.post("/users", headers=headers, json={
-        "email": "MANAGER@axis.example", "full_name": "Dup", "password": "long-enough-password",
+        "email": "MANAGER@axis.example", "full_name": "Dup", "password": "Long-enough-Passw0rd!",
         "role": "branch_manager", "branch_id": branch_id,
     }).json()["error"]["reason"] == "EMAIL_TAKEN"
 

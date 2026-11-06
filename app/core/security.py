@@ -25,8 +25,17 @@ def hash_password(password: str) -> str:
 
 
 def generate_temporary_password() -> str:
-    """16 random URL-safe characters: an admin passes it on and the user changes it after signing in."""
-    return secrets.token_urlsafe(12)
+    """16 random characters meeting the password policy (capital, small letter, digit, symbol): an admin passes it
+    on and the user changes it after signing in. Look-alike characters (0/O, 1/l/I) are left out."""
+    upper, lower, digits, symbols = "ABCDEFGHJKLMNPQRSTUVWXYZ", "abcdefghijkmnpqrstuvwxyz", "23456789", "@#$%&*!?"
+    every = upper + lower + digits + symbols
+    while True:
+        chars = [secrets.choice(upper), secrets.choice(lower), secrets.choice(digits), secrets.choice(symbols)]
+        chars += [secrets.choice(every) for _ in range(12)]
+        secrets.SystemRandom().shuffle(chars)
+        password = "".join(chars)
+        if not any(password[i] == password[i + 1] == password[i + 2] == password[i + 3] for i in range(13)):
+            return password
 
 
 def verify_password(password: str, password_hash: str | None) -> bool:
@@ -134,3 +143,30 @@ def generate_opaque_token() -> str:
 def hash_token(token: str) -> str:
     """Refresh tokens are stored hashed; a database leak does not yield usable tokens."""
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+MFA_STEP_EXPIRED = "The code step of your sign-in has expired. Sign in again."
+
+
+def create_mfa_challenge_token(settings: Settings, *, user_id: uuid.UUID, token_version: int) -> tuple[str, int]:
+    """Proof that the password was accepted, for the code step of two-step sign-in. Grants nothing else: it
+    travels in its own HttpOnly cookie and is only read by /auth/mfa/verify."""
+    now = datetime.now(UTC)
+    ttl = timedelta(minutes=settings.MFA_CHALLENGE_MINUTES)
+    payload = {"sub": str(user_id), "tv": token_version, "type": "mfa_challenge", "iat": now, "exp": now + ttl,
+               "jti": uuid.uuid4().hex}
+    token = jwt.encode(payload, settings.JWT_SECRET.get_secret_value(), algorithm=settings.JWT_ALGORITHM)
+    return token, int(ttl.total_seconds())
+
+
+def decode_mfa_challenge_token(settings: Settings, token: str) -> dict[str, Any]:
+    try:
+        payload = jwt.decode(
+            token, settings.JWT_SECRET.get_secret_value(), algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp", "iat", "sub", "type", "tv"]},
+        )
+    except jwt.PyJWTError:
+        raise AuthenticationError(MFA_STEP_EXPIRED, code="MFA_CHALLENGE_EXPIRED") from None
+    if payload.get("type") != "mfa_challenge":
+        raise AuthenticationError(MFA_STEP_EXPIRED, code="MFA_CHALLENGE_EXPIRED")
+    return payload

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, LifeBuoy, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Eye, LifeBuoy, Plus } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { api, qs } from "../api/client";
@@ -11,7 +11,7 @@ import { Badge, Button, Card, CardHeader, EmptyState, ErrorState, Input, PageHea
 import { cn, formatDateTime } from "../lib/format";
 import { useAuth } from "../store/hooks";
 
-type Box = "mine" | "queue" | "assigned" | "unassigned" | "all";
+type Box = "mine" | "queue" | "assigned" | "unassigned" | "forwarded" | "all";
 const PAGE = 25;
 const ROLE_LABEL: Record<string, string> = {
   department_user: "User", branch_manager: "Branch Manager", org_admin: "Organization Admin",
@@ -25,7 +25,10 @@ function boxesFor(role: string, onDuty: boolean): { id: Box; label: string }[] {
     : role === "master_admin" || role === "support_agent" ? "Technical queue" : "My queue";
   if (onDuty || role === "branch_manager" || role === "org_admin" || role === "master_admin") tabs.push({ id: "queue", label: queue });
   if (onDuty) tabs.push({ id: "assigned", label: "Assigned to me" });
-  if (onDuty || ["branch_manager", "org_admin", "master_admin"].includes(role)) tabs.push({ id: "unassigned", label: "Unassigned" });
+  if (onDuty || ["branch_manager", "org_admin", "master_admin"].includes(role)) {
+    tabs.push({ id: "unassigned", label: "Unassigned" });
+    tabs.push({ id: "forwarded", label: "Forwarded by me" }); // read-only: now with another team
+  }
   if (role === "branch_manager") tabs.push({ id: "all", label: "All from my branch" });
   if (role === "org_admin") tabs.push({ id: "all", label: "All in the bank" });
   return tabs;
@@ -122,7 +125,9 @@ export function SupportPage() {
             : isLoading ? <SkeletonRows />
             : !data?.items.length ? (
               <EmptyState icon={<LifeBuoy className="size-6" />} title="No tickets here"
-                description={box === "mine" ? "Tickets you raise appear here with every update." : "Nothing matches in this queue."}
+                description={box === "mine" ? "Tickets you raise appear here with every update."
+                  : box === "forwarded" ? "Tickets you forward to another team appear here, read-only, so you can follow them."
+                  : "Nothing matches in this queue."}
                 action={raises && box === "mine" && <Button onClick={() => setCreating(true)}><Plus className="size-4" />New ticket</Button>} />
             ) : (
               <>
@@ -161,11 +166,14 @@ function TicketRow({ ticket: t, staffSide, platform }: { ticket: Ticket; staffSi
             {t.queue_name}{t.category ? ` · ${t.category}` : ""}
             {platform && t.organization_name ? ` · ${t.organization_name}` : ""}
             {staffSide && from ? ` · from ${from}` : ""}
+            {staffSide && t.forwarded && !t.read_only && t.forwarded.by_name
+              ? ` · ${t.forwarded.escalation ? "escalated" : "forwarded"} by ${t.forwarded.by_name}` : ""}
             {` · ${t.assigned_to_name ? `with ${t.assigned_to_name}` : t.status === "awaiting_confirmation" ? "not sent yet" : "unassigned"}`}
             {` · updated ${formatDateTime(t.updated_at)}`}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
+          {t.read_only && <Badge tone="neutral"><Eye className="size-3" />Read only</Badge>}
           <SlaBadge dueAt={t.due_at} overdue={t.overdue} active={active} />
           {(t.priority === "high" || t.priority === "urgent") && <Badge tone={PRIORITY_TONE[t.priority]} className="capitalize">{t.priority}</Badge>}
           <TicketStatusBadge status={t.status} staffSide={staffSide} />

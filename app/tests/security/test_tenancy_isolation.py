@@ -31,7 +31,7 @@ def test_organization_a_cannot_see_organization_b(client, world):
 def test_org_admin_cannot_attach_users_to_another_orgs_branch(client, world):
     bank_a, bank_b = world
     response = login(client, bank_a.admin).post("/users", json={
-        "email": "x@example.com", "full_name": "X", "password": "long-enough-password",
+        "email": "x@example.com", "full_name": "Xavier", "password": "Long-enough-Passw0rd!",
         "role": "branch_manager", "branch_id": str(bank_b.branch_a.id),
     })
     assert response.status_code == 422
@@ -40,7 +40,7 @@ def test_org_admin_cannot_attach_users_to_another_orgs_branch(client, world):
 def test_org_admin_adds_branch_managers_only(client, world):
     bank_a, _ = world
     admin = login(client, bank_a.admin)
-    base = {"full_name": "New Person", "password": "long-enough-password", "branch_id": str(bank_a.branch_a.id)}
+    base = {"full_name": "New Person", "password": "Long-enough-Passw0rd!", "branch_id": str(bank_a.branch_a.id)}
     for role in ("department_user", "org_admin"):
         assert admin.post("/users", json={**base, "email": f"{role}@example.com", "role": role}).status_code == 403
     listed = admin.get("/users").json()["data"]["items"]
@@ -93,7 +93,7 @@ def test_branch_manager_creates_user_in_own_branch_regardless_of_input(client, w
     bank_a, _ = world
     response = login(client, bank_a.manager_a).post("/users", json={
         "email": "new.user@example.com", "full_name": "New User",
-        "password": "long-enough-password", "role": "department_user",
+        "password": "Long-enough-Passw0rd!", "role": "department_user",
         "branch_id": str(bank_a.branch_b.id),  # ignored: forced to the manager's branch
         "department_id": str(bank_a.dept_a2.id),
     })
@@ -145,7 +145,7 @@ def test_master_admin_creates_org_admin_only(client, db, world):
     master = make_user(db, Role.MASTER_ADMIN)
     db.commit()
     session = login(client, master)
-    base = {"email": "boss@example.com", "full_name": "Boss", "password": "long-enough-password",
+    base = {"email": "boss@example.com", "full_name": "Boss", "password": "Long-enough-Passw0rd!",
             "organization_id": str(bank_a.org.id)}
     assert session.post("/users", json={**base, "role": "org_admin"}).status_code == 201
     assert session.post("/users", json={

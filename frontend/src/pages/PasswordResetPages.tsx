@@ -6,8 +6,8 @@ import { Button, Field, Input, PasswordInput } from "../components/ui";
 import { sessionExpired } from "../store/authSlice";
 import { useAppDispatch, useAuth } from "../store/hooks";
 import { AuthShell } from "./LoginPage";
+import { PasswordRules, passwordOk } from "../components/PasswordRules";
 
-const MIN_PASSWORD = 12;
 
 function BackToSignIn() {
   return (
@@ -90,9 +90,8 @@ export function ResetPasswordPage() {
   const [done, setDone] = useState<string | null>(null);
   const [error, setError] = useState<{ message: string; expired: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
-  const tooShort = password.length > 0 && password.length < MIN_PASSWORD;
   const mismatch = confirm.length > 0 && confirm !== password;
-  const ready = password.length >= MIN_PASSWORD && confirm === password;
+  const ready = passwordOk(password) && confirm === password;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -151,10 +150,10 @@ export function ResetPasswordPage() {
           <h1 className="text-base font-semibold">Choose a new password</h1>
           <p className="text-sm text-muted">You'll be signed out everywhere and can sign in with the new one.</p>
         </div>
-        <Field label="New password" htmlFor="new-password"
-          hint={tooShort ? `At least ${MIN_PASSWORD} characters (${password.length}/${MIN_PASSWORD})` : `At least ${MIN_PASSWORD} characters`}>
+        <Field label="New password" htmlFor="new-password">
           <PasswordInput id="new-password" autoComplete="new-password" required autoFocus value={password}
             onChange={(e) => setPassword(e.target.value)} />
+          <PasswordRules password={password} />
         </Field>
         <Field label="Confirm new password" htmlFor="confirm-password" hint={mismatch ? "The passwords don't match." : undefined}>
           <PasswordInput id="confirm-password" autoComplete="new-password" required value={confirm}

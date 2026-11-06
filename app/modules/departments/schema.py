@@ -4,16 +4,17 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.branches.schema import CODE_PATTERN
+from app.core.inputs import Name
 
 
 class DepartmentCreate(BaseModel):
     branch_id: uuid.UUID
-    name: str = Field(min_length=2, max_length=200)
+    name: Name = Field(min_length=2, max_length=200)
     code: str = Field(pattern=CODE_PATTERN)
 
 
 class DepartmentUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=2, max_length=200)
+    name: Name | None = Field(default=None, min_length=2, max_length=200)
     is_active: bool | None = None
 
 

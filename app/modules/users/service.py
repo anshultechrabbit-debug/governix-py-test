@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import translate_unique_violation
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
+from app.core.inputs import check_password
 from app.core.security import generate_temporary_password, hash_password
 from app.modules.audit.service import record_event
 from app.modules.auth.model import RefreshToken
@@ -98,6 +99,8 @@ class UserService:
         organization_id, branch_id, department_id = self._resolve_scope(
             principal, data.role, data.organization_id, branch_id, data.department_id
         )
+        if data.password:
+            check_password(data.password, email=data.email, name=data.full_name)
         generated = None if data.password else generate_temporary_password()
         user = User(
             email=data.email.lower(),
@@ -267,6 +270,8 @@ class UserService:
         user = self.repository.get(user_id)
         if user is None or not self._can_manage(principal, user):
             raise NotFoundError("User not found.")
+        if new_password:
+            check_password(new_password, email=user.email, name=user.full_name)
         generated = None if new_password else generate_temporary_password()
         user.password_hash = hash_password(new_password or generated)
         user.token_version += 1
@@ -279,6 +284,30 @@ class UserService:
         )
         self.session.commit()
         return generated
+
+    def reset_mfa(self, principal: Principal, user_id: uuid.UUID) -> User:
+        """Turn off someone's two-step sign-in (a lost or replaced phone): their authenticator and backup codes stop
+        working, they are signed out everywhere, and they may set it up again. Same rule as a password reset."""
+        from app.modules.auth import alerts
+        from app.modules.auth.service import clear_mfa
+
+        user = self.repository.get(user_id)
+        if user is None or not self._can_manage(principal, user):
+            raise NotFoundError("User not found.")
+        if user.id == principal.user_id:
+            raise ValidationError("Turn your own two-step sign-in off from your account menu.")
+        if user.mfa_enabled_at is None and user.mfa_secret is None:
+            raise ValidationError("Two-step sign-in is not on for this user.", code="MFA_NOT_ENABLED")
+        clear_mfa(self.session, user)
+        user.token_version += 1
+        self._revoke_refresh_tokens(user.id)
+        record_event(
+            self.session, "user.mfa_reset", actor=principal, organization_id=user.organization_id,
+            resource_type="user", resource_id=user.id,
+        )
+        alerts.two_step_changed(self.session, user, "reset", actor=self.repository.get(principal.user_id))
+        self.session.commit()
+        return user
 
     def delete(self, principal: Principal, user_id: uuid.UUID) -> None:
         """Soft-delete the account: it leaves every list and its sessions end, but the row stays, so

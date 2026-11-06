@@ -54,9 +54,47 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   CSRF header. The frontend client adds it.
 - Tabs share the refresh cookie. A token rotated less than 30 s ago gets `TOKEN_ROTATED` (another tab
   won the race) instead of revoking the family.
+- **Two-step sign-in (2026-11-04)**: optional for everyone, set up from the account menu (`TwoStepDialog.tsx`).
+  - TOTP (`auth/mfa.py`, pyotp): 6 digits/30 s, ±1 step, never the same step twice (`users.mfa_last_step`). The secret
+    is Fernet-encrypted in `users.mfa_secret` with a key from `MFA_ENCRYPTION_KEY` (in `.env`; changing it disables
+    every authenticator). `mfa_enabled_at` set = on; a secret without it = setup not confirmed.
+  - Login with it on answers `mfa_required: true` and sets only the HttpOnly `governix_mfa` challenge cookie
+    (`MFA_CHALLENGE_MINUTES`, bound to `token_version`); `/auth/mfa/verify` takes the app code or a backup code and
+    issues the session. Wrong codes count as failed logins; `/auth/mfa/*` is also rate-limited.
+  - **Login lockout is DISABLED for now (2026-11-05, user's request)**: the lock checks and the lock itself are commented
+    out in `auth/service.py` (search "LOCKOUT DISABLED"); failures are still counted and audited. Two tests are skipped.
+  - 10 backup codes (`mfa_recovery_codes`, SHA-256), shown once at setup or renewal. They only sign in: turning it
+    off needs the password plus an app code (never a backup code).
+  - Security alerts (`auth/alerts.py`, notification `SECURITY_ALERT`): set up, turned off, reset, backup code used ->
+    the person and `account_managers` (their Branch Manager and Org Admins; for an Org Admin also Master Admins).
+    That is the defence against a thief who knows the password of an account without an authenticator and sets up
+    their own phone (the user chose alerts with no waiting period). An admin who manages the user (`UserService._can_manage`) resets it via `/users/{id}/reset-mfa`
+    (signs them out everywhere, audited). Tests: `app/tests/integration/test_two_step_sign_in.py`.
+- **Important actions need a fresh authenticator code, every time** (`auth/step_up.py`, `StepUp`): the endpoint calls
+  `confirm_code("<action>")` before doing anything; the code comes in `X-Authenticator-Code`. No two-step sign-in ->
+  403 `STEP_UP_SETUP_REQUIRED` (refused until set up); no/wrong/used code -> 403 `STEP_UP_REQUIRED` / `STEP_UP_INVALID`
+  / `STEP_UP_CODE_USED`. App codes only (not backup codes); the spent step is saved with the action, so one code
+  approves one action. The frontend client (`api/client.ts`) asks via `StepUpPrompt` and resends; pages need nothing.
+  Covered: add user; change a user's email/role/active/org/branch/department; delete user; reset someone's password
+  or two-step; suspend/reactivate or delete an organization; delete a branch or department (the `confirm=true` call,
+  not the preview); publish/disable a portal; withdraw/restore a policy version; delete a policy or document; add
+  support staff. `STEP_UP_ENABLED` (refused off in production) is off in the test suite except `test_step_up.py`.
 - Error bodies: `error.code` is the HTTP status (401, 404, ...) and `error.reason` the stable text
   identifier (`INVALID_CREDENTIALS`, `VERSION_CONFLICT`, ...). The frontend's `ApiError.code` holds the
   reason.
+
+## Input rules (2026-11-05, `app/core/inputs.py`)
+
+- Every request schema uses the shared types, never a bare `str` for user text: `PersonName` (letters, spaces, ' - .),
+  `Name` (one line, a letter or digit, no < >), `Line`, `Text` (multi-line), `Phone` (7-15 digits), `Website`
+  (http/https), `Tag` (no commas), `NewPassword`, and `MaybeName/MaybeLine/MaybeText` (blank = not given). Values are
+  cleaned before the length check, so "   " never passes. Each type carries `x-rules` into the OpenAPI schema.
+- Password policy (`password_problems`): 12-128 characters, a capital, a small letter, a digit, a symbol, no space at
+  either end, no character 4+ times in a row, not the person's name or email local part (`check_password` in the
+  services, `WEAK_PASSWORD`). Applies whenever a password is set, never at sign-in. `generate_temporary_password`
+  always meets it. The frontend mirrors it in `components/PasswordRules.tsx`.
+- 422 messages name the field and the rule ("New password must include a digit (0-9)."), `error_handlers._readable`.
+- `docs/governix-input-validations.pdf` is generated from the code (routes, schemas, permissions, service rules).
 
 ## Support Center (`app/modules/tickets/`, `/support` API; replaced complaints and `/tickets` on 2026-11-03)
 
@@ -77,6 +115,13 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   then user id; queue profile rows locked `FOR UPDATE` in id order. Nobody eligible -> unassigned and the
   managers are notified. Availability/deactivation never moves tickets; `/support/staff/{id}/reassign` does,
   recorded and notified.
+- **Forwarding (2026-11-06)**: whoever forwards or escalates a ticket keeps seeing it (`queues.forwarded_by_clause`, an
+  EXISTS on their forward entry, no new column), **read-only** once it is in a queue they do not work
+  (`TicketService._forwarded_away`; `read_only` on the ticket; reply/note/attach refused with 403
+  `TICKET_FORWARDED_AWAY`; their own box `forwarded`, "Forwarded by me"). The creator and a ticket forwarded back
+  to the person's queue are never read-only. The new team sees `forwarded` (latest forward: who, role, from
+  queue, reason) as a banner on the ticket and in the list; the new assignee's notification says "Forwarded to
+  you" with who, from where and why.
 - **Timeline** is `ticket_messages` with `kind` reply/note/status/forward/assign. Internal notes carry the level
   they were written at and are shown only to that level's staff side (`reads_notes_of`), never the creator.
 - **SLA** (`sla.py`, settings `SUPPORT_SLA_HOURS` etc.): due times from priority at confirmation; the
@@ -246,7 +291,30 @@ no word lists.
   the mortgage policy"). The search is limited to that policy, its opening passages and contents are read
   (`build_evidence(whole_document=)`), and the prompt asks for purpose and main topics. It skips the term gate, the
   ambiguity question and the on-topic check, and never falls back to an earlier version.
-- Without a model (local stand-in, outage) there are no framing words or kinds: behaviour is as before v73.
+- Without a model (local stand-in, outage) there are no framing words or kinds (`Rewrite.kind` is None). The
+  OpenAI client falls back to the local stand-in when a call fails, so the v74 rules below work without one.
+
+## Words that name nothing, with or without a model (v74)
+
+- **Closed classes, never a subject** (`evidence.CLOSED_CLASS_TERMS`): interjections and discourse markers ("okay",
+  "ok", "hmm", "yeah"), informal function words ("kinda", "sorta", "wanna", "pls", "abt") and "here". The model can't
+  mark them as framing: no document uses them, and `_framing` keeps every word no document uses (the FIU-IND rule).
+  - A classifier before "of" ("sort/variety/forms/class of") frames the noun after it (`_CLASSIFIER_OF`).
+  - An opening "okay then / so / now / well / hmm" is set aside before anything reads the question
+    (`query_rewrite.without_opener`). Not "so far", "now that", "well-known", or a message that is nothing else.
+- **Which documents the reader holds** (`evidence.documents_held`): "which is the documents assign on me", "policies
+  available for me", "what documents do you have", "which policies can I ask about", "my documents". The words that
+  tie the documents to the reader or the assistant are the relation, whatever the verb or its spelling, so they are
+  dropped before the remaining-words check. This is used with the model's `kind == "documents"` too: the model never
+  lists an action as framing, and "assign" is a word documents use.
+  - Documents a customer hands in ("need", "submit", "mandatory", ...) are never the catalogue.
+- **The documents named only by a common noun** ("What is the policy?", "what is the documents", "what kind of the
+  policy", "summarize the policy"; `_names_documents_only`):
+  - If the reader can see exactly one policy (or chose policies in the UI), it gets an overview of that policy.
+  - Otherwise it gets `DOCUMENT_LIST` asking which policy they mean.
+  - Not for versions, clauses, the reader's case, or documents a customer hands in.
+- **"What documents do I need?"** has a subject (`asks_for_submitted_documents` in `_has_subject`) and is searched,
+  not `NO_SUBJECT`.
 
 ## "Not found" answers (v58)
 

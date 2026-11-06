@@ -20,3 +20,13 @@ class RefreshToken(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     replaced_by_id: Mapped[uuid.UUID | None]
+
+
+class MfaRecoveryCode(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """One-time backup codes for two-step sign-in, stored hashed. Shown once, when issued."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings
 from app.core.database import translate_unique_violation
 from app.core.exceptions import ConflictError, NotFoundError, PayloadTooLargeError, ValidationError
+from app.core.inputs import check_password
 from app.core.security import hash_password
 from app.infrastructure.storage.base import Storage
 from app.modules.audit.service import record_event
@@ -86,6 +87,7 @@ class OrganizationService:
                 details={"name": data.name, "slug": data.slug, "allowed_port": data.allowed_port},
             )
             if data.admin is not None:
+                check_password(data.admin.password, email=data.admin.email, name=data.admin.full_name)
                 admin = User(
                     email=data.admin.email.lower(), full_name=data.admin.full_name,
                     password_hash=hash_password(data.admin.password), role=Role.ORG_ADMIN,

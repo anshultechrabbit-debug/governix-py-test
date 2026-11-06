@@ -8,6 +8,7 @@ import { api, ApiError, qs } from "../api/client";
 import type { Organization, Page, User, UserCreated, UserStats } from "../api/types";
 import { BranchFields, branchBody, branchReady, EMPTY_BRANCH, type BranchDraft } from "../components/BranchFields";
 import { useBranches } from "../components/domain";
+import { ResetTwoStepButton } from "../components/TwoStepDialog";
 import {
   Badge, Button, Card, EmptyState, ErrorState, Field, Input, Modal, PageHeader, Select, SkeletonRows, Stat, StatusBadge,
   Table,
@@ -176,6 +177,7 @@ export function AdminUsersPage() {
                           <IconButton label={`Reset password for ${user.full_name}`} onClick={() => setResetting(user)}>
                             <KeyRound className="size-3.5" />
                           </IconButton>
+                          {user.id !== me?.id && <ResetTwoStepButton user={user} />}
                           <IconButton label={`Delete ${user.full_name}`} onClick={() => setDeleting(user)} danger>
                             <Trash2 className="size-3.5" />
                           </IconButton>

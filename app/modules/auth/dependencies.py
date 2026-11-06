@@ -83,7 +83,10 @@ def get_current_principal(
             organization is None or organization.deleted_at is not None
             or organization.status != OrganizationStatus.ACTIVE
         ):
-            raise AuthenticationError("Organization is not active.", code="ORGANIZATION_SUSPENDED")
+            raise AuthenticationError(
+                "Your organization's access to Governix is suspended. Contact your organization's administrator or "
+                "Governix support.", code="ORGANIZATION_SUSPENDED",
+            )
 
     principal = principal_from_user(user, db)
     request.state.principal = principal

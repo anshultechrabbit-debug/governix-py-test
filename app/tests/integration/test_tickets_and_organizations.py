@@ -28,7 +28,7 @@ def test_organisation_is_created_with_branding_and_its_first_admin(client, db, m
     platform = login(client, master)
     created = platform.post("/organizations", json={
         "name": "ABC Bank", "slug": "abc-bank", "primary_color": "#1e3a8a", "contact_email": "it@abcbank.com",
-        "admin": {"email": "admin@abcbank.com", "full_name": "ABC Admin", "password": "a-very-long-password-1"},
+        "admin": {"email": "admin@abcbank.com", "full_name": "ABC Admin", "password": "A-very-long-Passw0rd-1"},
     })
     assert created.status_code == 201, created.text
     org = created.json()["data"]
@@ -36,7 +36,7 @@ def test_organisation_is_created_with_branding_and_its_first_admin(client, db, m
     assert platform.post(f"/organizations/{org['id']}/logo",
                          files={"file": ("logo.png", io.BytesIO(PNG), "image/png")}).json()["data"]["has_logo"] is True
 
-    session = client.post("/auth/login", json={"email": "admin@abcbank.com", "password": "a-very-long-password-1"})
+    session = client.post("/auth/login", json={"email": "admin@abcbank.com", "password": "A-very-long-Passw0rd-1"})
     assert session.status_code == 200, session.text
     headers = session_headers(session.cookies)
     mine = client.get("/organizations/me", headers=headers).json()["data"]
@@ -45,7 +45,7 @@ def test_organisation_is_created_with_branding_and_its_first_admin(client, db, m
 
     duplicate_admin = platform.post("/organizations", json={
         "name": "XYZ Bank", "slug": "xyz-bank",
-        "admin": {"email": "admin@abcbank.com", "full_name": "Dup", "password": "a-very-long-password-1"},
+        "admin": {"email": "admin@abcbank.com", "full_name": "Dup", "password": "A-very-long-Passw0rd-1"},
     })
     assert duplicate_admin.status_code == 422
     assert platform.get("/organizations").json()["data"]["total"] == 1  # nothing half-created
@@ -86,7 +86,7 @@ def test_other_organisations_cannot_read_a_logo(client, db, tenant, master):
 
 def test_branch_manager_creates_users_without_a_department(client, tenant):
     response = login(client, tenant.manager_a).post("/users", json={
-        "email": "rahul@example.com", "full_name": "Rahul", "password": "a-very-long-password-1",
+        "email": "rahul@example.com", "full_name": "Rahul", "password": "A-very-long-Passw0rd-1",
         "role": "department_user",
     })
     assert response.status_code == 201, response.text

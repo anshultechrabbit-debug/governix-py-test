@@ -1,15 +1,18 @@
-import { KeyRound, LogOut, ShieldCheck, UserRound } from "lucide-react";
+import { KeyRound, LogOut, ShieldCheck, Smartphone, UserRound } from "lucide-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "../../api/client";
 import { Button, Field, KeyValue, PasswordInput } from "../ui";
 import { cn, humanize } from "../../lib/format";
 import { useAuth, useToast } from "../../store/hooks";
+import { TwoStepDialog } from "../TwoStepDialog";
+import { PasswordRules, passwordOk } from "../PasswordRules";
 
 const ROLE_LABEL: Record<string, string> = {
   master_admin: "Master Admin",
   org_admin: "Organization Admin",
   branch_manager: "Branch Manager",
   department_user: "User",
+  support_agent: "Support Agent",
 };
 
 /** The signed-in identity, the exact access it carries, and sign out. Opens upwards from the sidebar foot, or
@@ -18,6 +21,7 @@ export function UserMenu({ placement = "side" }: { placement?: "side" | "top" })
   const { me, can, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
+  const [twoStep, setTwoStep] = useState(false);
   const root = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -82,6 +86,12 @@ export function UserMenu({ placement = "side" }: { placement?: "side" | "top" })
             className="flex w-full items-center gap-2 border-b border-line px-4 py-2.5 text-sm text-ink-soft hover:bg-subtle">
             <KeyRound className="size-4" />Change password
           </button>
+          <button type="button" role="menuitem" onClick={() => { setOpen(false); setTwoStep(true); }}
+            className="flex w-full items-center gap-2 border-b border-line px-4 py-2.5 text-sm text-ink-soft hover:bg-subtle">
+            <Smartphone className="size-4" />Two-step sign-in
+            <span className={cn("ml-auto rounded px-1.5 py-0.5 text-[11px] font-medium",
+              me.mfa_enabled ? "bg-ok-50 text-ok-600" : "bg-subtle text-muted")}>{me.mfa_enabled ? "On" : "Off"}</span>
+          </button>
           <button type="button" role="menuitem" onClick={() => void logout()}
             className="flex w-full items-center gap-2 px-4 py-2.5 text-sm text-bad-600 hover:bg-bad-50">
             <LogOut className="size-4" />Sign out
@@ -89,12 +99,13 @@ export function UserMenu({ placement = "side" }: { placement?: "side" | "top" })
         </div>
       )}
       {changing && <ChangePasswordDialog onClose={() => setChanging(false)} />}
+      {twoStep && <TwoStepDialog onClose={() => setTwoStep(false)} />}
     </div>
   );
 }
 
 function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
-  const { logout } = useAuth();
+  const { me, logout } = useAuth();
   const toast = useToast();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -127,11 +138,14 @@ function ChangePasswordDialog({ onClose }: { onClose: () => void }) {
             <p className="text-sm text-muted">Signs you out of every device.</p>
           </div>
           <Field label="Current password"><PasswordInput autoComplete="current-password" required value={current} onChange={(event) => setCurrent(event.target.value)} /></Field>
-          <Field label="New password" hint="At least 12 characters"><PasswordInput autoComplete="new-password" required minLength={12} value={next} onChange={(event) => setNext(event.target.value)} /></Field>
+          <Field label="New password">
+            <PasswordInput autoComplete="new-password" required value={next} onChange={(event) => setNext(event.target.value)} />
+            <PasswordRules password={next} email={me?.email} name={me?.full_name} />
+          </Field>
           {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-sm text-bad-600" role="alert">{error}</p>}
           <div className="flex flex-wrap justify-end gap-2">
             <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button type="submit" loading={busy}>Change password</Button>
+            <Button type="submit" loading={busy} disabled={!current || !passwordOk(next, { email: me?.email, name: me?.full_name })}>Change password</Button>
           </div>
         </form>
       </div>

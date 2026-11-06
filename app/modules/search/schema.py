@@ -3,10 +3,11 @@ from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field
+from app.core.inputs import Line
 
 
 class SearchRequest(BaseModel):
-    query: str = Field(min_length=1, max_length=1000)
+    query: Line = Field(min_length=1, max_length=1000)
     mode: Literal["current", "as_of", "versions", "all"] = "current"
     as_of: date | None = None
     version_ids: list[uuid.UUID] = Field(default_factory=list, max_length=20)

@@ -9,16 +9,20 @@ from app.core.config import Settings
 from app.core.database import get_db
 from app.core.dependencies import get_app_settings
 from app.core.exceptions import AuthenticationError
+from app.core.security import MFA_STEP_EXPIRED
 from app.core.rate_limit import RateLimiter
 from app.core.responses import ApiResponse, error_response, ok
 from app.infrastructure.mail.smtp import send_email
 from app.modules.auth.cookies import (
     CSRF_COOKIE,
+    MFA_COOKIE,
     REFRESH_COOKIE,
     clear_auth_cookies,
+    clear_mfa_cookie,
     csrf_matches,
     require_csrf,
     set_auth_cookies,
+    set_mfa_cookie,
 )
 from app.modules.auth.dependencies import CurrentPrincipal
 from app.modules.auth.schema import (
@@ -28,6 +32,12 @@ from app.modules.auth.schema import (
     LoginRequest,
     Me,
     Message,
+    MfaChallenge,
+    MfaCode,
+    MfaDisable,
+    MfaSetup,
+    MfaStatus,
+    RecoveryCodes,
     ResetPasswordRequest,
 )
 from app.modules.auth.service import AuthService
@@ -52,11 +62,70 @@ _reset_by_client = RateLimiter(10, 15 * 60, message=_RESET_LIMIT)
 RESET_SENT = "If an account uses that email, we have sent it a link to reset the password."
 
 
+# Codes are 6 digits: besides the account lockout, limit how fast anyone can guess them.
+_MFA_LIMIT = "Too many code attempts. Please wait a few minutes and try again."
+_mfa_by_client = RateLimiter(30, 5 * 60, message=_MFA_LIMIT)
+_mfa_by_user = RateLimiter(10, 5 * 60, message=_MFA_LIMIT)
+
+
 @router.post("/login", response_model=ApiResponse[AuthSession])
 def login(body: LoginRequest, request: Request, response: Response, service: Service, settings: AppSettings):
-    tokens = service.login(body.email, body.password)
+    """Signs in, or, for an account with two-step sign-in, answers `mfa_required` and opens the code step:
+    send the code to /auth/mfa/verify."""
+    result = service.login(body.email, body.password)
+    if isinstance(result, MfaChallenge):
+        set_mfa_cookie(response, request, settings, result.token, result.expires_in)
+        return ok(AuthSession(expires_in=result.expires_in, mfa_required=True))
+    clear_mfa_cookie(response, request, settings)
+    set_auth_cookies(response, request, settings, result)
+    return ok(AuthSession(expires_in=result.expires_in))
+
+
+@router.post("/mfa/verify", response_model=ApiResponse[AuthSession])
+def verify_mfa(body: MfaCode, request: Request, response: Response, service: Service, settings: AppSettings):
+    """The code step of a two-step sign-in: a code from the authenticator app, or a backup code. Wrong codes
+    count toward the account lockout, as wrong passwords do."""
+    _mfa_by_client.check(request.client.host if request.client else "unknown")
+    challenge = request.cookies.get(MFA_COOKIE)
+    if not challenge:
+        raise AuthenticationError(MFA_STEP_EXPIRED, code="MFA_CHALLENGE_EXPIRED")
+    tokens = service.verify_mfa(challenge, body.code)
+    clear_mfa_cookie(response, request, settings)
     set_auth_cookies(response, request, settings, tokens)
     return ok(AuthSession(expires_in=tokens.expires_in))
+
+
+@router.get("/mfa", response_model=ApiResponse[MfaStatus])
+def mfa_status(principal: CurrentPrincipal, service: Service):
+    return ok(service.mfa_status(principal))
+
+
+@router.post("/mfa/setup", response_model=ApiResponse[MfaSetup])
+def mfa_setup(principal: CurrentPrincipal, service: Service):
+    """Start setting up an authenticator app: scan the QR code (`otpauth_uri`) or type `secret`, then confirm with
+    /auth/mfa/enable. Until then sign-in is unchanged."""
+    return ok(service.mfa_setup(principal))
+
+
+@router.post("/mfa/enable", response_model=ApiResponse[RecoveryCodes])
+def mfa_enable(body: MfaCode, principal: CurrentPrincipal, service: Service):
+    """Confirm the setup with a code from the app. Returns 10 one-time backup codes, shown only now."""
+    _mfa_by_user.check(str(principal.user_id))
+    return ok(RecoveryCodes(codes=service.mfa_enable(principal, body.code)))
+
+
+@router.post("/mfa/disable", response_model=ApiResponse[MfaStatus])
+def mfa_disable(body: MfaDisable, principal: CurrentPrincipal, service: Service):
+    """Turn two-step sign-in off. Needs the password and a current code (or a backup code)."""
+    _mfa_by_user.check(str(principal.user_id))
+    return ok(service.mfa_disable(principal, body.password, body.code))
+
+
+@router.post("/mfa/recovery-codes", response_model=ApiResponse[RecoveryCodes])
+def mfa_recovery_codes(body: MfaCode, principal: CurrentPrincipal, service: Service):
+    """New backup codes (the old ones stop working). Needs a code from the app."""
+    _mfa_by_user.check(str(principal.user_id))
+    return ok(RecoveryCodes(codes=service.mfa_new_recovery_codes(principal, body.code)))
 
 
 @router.post("/refresh", response_model=ApiResponse[AuthSession])

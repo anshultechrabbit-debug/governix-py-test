@@ -12,6 +12,7 @@ from app.modules.auth.permissions import Permission, Principal
 from app.modules.departments.schema import DepartmentCreate, DepartmentRead, DepartmentUpdate
 from app.modules.departments.service import DepartmentService
 from app.modules.organizations.schema import DeletionPreview, DeletionResult
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/departments", tags=["departments"])
 
@@ -61,8 +62,12 @@ def department_deletion_preview(department_id: uuid.UUID, principal: DepartmentA
 
 @router.delete("/{department_id}", response_model=ApiResponse[DeletionResult])
 def delete_department(
-    department_id: uuid.UUID, principal: DepartmentAdmin, service: Service, confirm: Annotated[bool, Query()] = False,
+    department_id: uuid.UUID, principal: DepartmentAdmin, service: Service, confirm_code: StepUp,
+    confirm: Annotated[bool, Query()] = False,
 ):
     """Soft-delete the department and its users. Without confirm=true: 409
-    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes."""
+    DELETE_CONFIRMATION_REQUIRED, with the preview in `error.details`, and nothing changes. The real deletion needs
+    an authenticator code."""
+    if confirm:
+        confirm_code("department.delete")
     return ok(service.delete(principal, department_id, confirm=confirm))

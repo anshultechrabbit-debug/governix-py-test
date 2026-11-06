@@ -18,11 +18,13 @@ from sqlalchemy.orm import Session
 from app.modules.auth.permissions import Principal, Role
 from app.modules.branches.model import Branch
 from app.modules.tickets.model import (
+    MessageKind,
     StaffRole,
     SupportStaff,
     SupportStaffOrganization,
     Ticket,
     TicketLevel,
+    TicketMessage,
     TicketStatus,
     TicketTeam,
 )
@@ -154,13 +156,21 @@ def handling_clause(principal: Principal, duty: Duty) -> ColumnElement[bool]:
     return and_(Ticket.status != TicketStatus.AWAITING_CONFIRMATION, or_(*clauses))
 
 
+def forwarded_by_clause(principal: Principal) -> ColumnElement[bool]:
+    """Tickets the caller forwarded (or escalated) at some point. They keep following them, read-only, once
+    the ticket is in a queue they do not work (TicketService._forwarded_away)."""
+    return exists().where(TicketMessage.ticket_id == Ticket.id, TicketMessage.kind == MessageKind.FORWARD,
+                          TicketMessage.author_id == principal.user_id)
+
+
 def visible_clause(principal: Principal, duty: Duty) -> ColumnElement[bool]:
-    """Everything the caller may open: their own tickets (drafts too), their queues, and what they oversee.
+    """Everything the caller may open: their own tickets (drafts too), their queues, what they oversee, and
+    what they forwarded (read-only, see forwarded_by_clause).
 
     A Branch Manager follows every ticket raised in their branch wherever it went; an Org Admin, every
     ticket of the bank. Neither reads another level's internal notes (reads_notes_of).
     """
-    oversight = [handling_clause(principal, duty)]
+    oversight = [handling_clause(principal, duty), forwarded_by_clause(principal)]
     if principal.role is Role.ORG_ADMIN:
         oversight.append(Ticket.organization_id == principal.organization_id)
     elif principal.role is Role.BRANCH_MANAGER:

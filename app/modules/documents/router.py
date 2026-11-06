@@ -34,6 +34,8 @@ from app.modules.documents.schema import (
 from app.modules.search.model import Chunk
 from app.modules.documents.service import DocumentService
 from app.modules.ingestion import progress as progress_module
+from app.modules.auth.step_up import StepUp
+from app.core.inputs import MaybeText
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -74,7 +76,7 @@ def upload_document(
     department_id: Annotated[uuid.UUID | None, Form()] = None,
     category_id: Annotated[uuid.UUID | None, Form()] = None,
     allow_duplicate: Annotated[bool, Form()] = False,
-    duplicate_reason: Annotated[str | None, Form(max_length=1000)] = None,
+    duplicate_reason: Annotated[MaybeText, Form(max_length=1000)] = None,
 ):
     document = service.upload(
         principal,
@@ -168,8 +170,9 @@ def archive_document(document_id: uuid.UUID, principal: Uploader, service: Servi
 
 
 @router.delete("/{document_id}", response_model=ApiResponse[dict])
-def delete_document(document_id: uuid.UUID, principal: Uploader, service: Service):
+def delete_document(document_id: uuid.UUID, principal: Uploader, service: Service, confirm_code: StepUp):
     """Delete a document permanently, with its version, chunks and stored file."""
+    confirm_code("document.deleted")
     service.delete(principal, document_id)
     return ok({"deleted": True})
 

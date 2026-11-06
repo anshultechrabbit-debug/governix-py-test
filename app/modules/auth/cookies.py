@@ -3,6 +3,7 @@
     governix_access   HttpOnly  the access JWT; expires with it
     governix_refresh  HttpOnly  the opaque refresh token; ends with the browser session
     governix_csrf     readable  the page echoes it in X-CSRF-Token on every unsafe request
+    governix_mfa      HttpOnly  between the password and the code of a two-step sign-in, for a few minutes
 
 All three are SameSite=Lax. Because the browser sends cookies by itself, an
 unsafe request authenticated by cookie must always carry the CSRF header (see
@@ -23,6 +24,7 @@ from app.modules.auth.schema import TokenPair
 ACCESS_COOKIE = "governix_access"
 REFRESH_COOKIE = "governix_refresh"
 CSRF_COOKIE = "governix_csrf"
+MFA_COOKIE = "governix_mfa"
 CSRF_HEADER = "X-CSRF-Token"
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -54,6 +56,15 @@ def clear_auth_cookies(response: Response, request: Request, settings: Settings)
     secure, samesite = _secure(request, settings), _samesite(settings)
     for name in (ACCESS_COOKIE, REFRESH_COOKIE, CSRF_COOKIE):
         response.delete_cookie(name, httponly=name != CSRF_COOKIE, secure=secure, samesite=samesite)
+
+
+def set_mfa_cookie(response: Response, request: Request, settings: Settings, token: str, max_age: int) -> None:
+    response.set_cookie(MFA_COOKIE, token, max_age=max_age, httponly=True, secure=_secure(request, settings),
+                        samesite=_samesite(settings))
+
+
+def clear_mfa_cookie(response: Response, request: Request, settings: Settings) -> None:
+    response.delete_cookie(MFA_COOKIE, httponly=True, secure=_secure(request, settings), samesite=_samesite(settings))
 
 
 def csrf_matches(request: Request, expected: str | None) -> bool:

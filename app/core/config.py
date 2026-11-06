@@ -125,6 +125,16 @@ class Settings(BaseSettings):
     REFRESH_TOKEN_TTL_DAYS: int = 7
     LOGIN_MAX_FAILED_ATTEMPTS: int = 5
     LOGIN_LOCKOUT_MINUTES: int = 15
+    # Two-step sign-in (authenticator app). The authenticator secrets are stored encrypted with a key derived from
+    # MFA_ENCRYPTION_KEY (any string of 32+ characters). Changing or losing it makes every enrolled authenticator
+    # unreadable: people then sign in with a backup code or have an admin reset it. Without it the key is derived
+    # from JWT_SECRET, which locally is ephemeral (a warning is logged), so set it.
+    MFA_ENCRYPTION_KEY: SecretStr | None = None
+    # How long the code step of a sign-in stays open after the password was accepted.
+    MFA_CHALLENGE_MINUTES: int = 5
+    # Important actions (users, deletions, policy withdrawals, ...: auth/step_up.py) need a fresh authenticator code.
+    # Cannot be turned off in production; the test suite turns it off except where it tests it.
+    STEP_UP_ENABLED: bool = True
     # Forgot password: the emailed link is PASSWORD_RESET_URL?token=..., valid this long and once.
     # Set the URL to the portal's reset page as users reach it (e.g. http://192.168.1.4:7001/reset-password);
     # it is never taken from the request, so a forged Host or Origin cannot redirect the token.
@@ -344,6 +354,8 @@ class Settings(BaseSettings):
     def check_backend_requirements(self) -> "Settings":
         # The RAG limiter is per-process (app/core/rate_limit.py), so it bounds
         # the per-worker rate. Refuse to pretend otherwise in production.
+        if self.APP_ENV is AppEnv.PRODUCTION and not self.STEP_UP_ENABLED:
+            raise ValueError("STEP_UP_ENABLED=false is not allowed in production: important actions need a code.")
         if self.APP_ENV is AppEnv.PRODUCTION and not self.RAG_RATE_LIMIT_ENABLED:
             raise ValueError(
                 "RAG_RATE_LIMIT_ENABLED=false is not allowed in production: /ai/ask spends LLM budget."
@@ -433,6 +445,13 @@ class Settings(BaseSettings):
             self._jwt_secret_is_ephemeral = True
         elif len(self.JWT_SECRET.get_secret_value()) < 32:
             raise ValueError("JWT_SECRET must be at least 32 characters.")
+        if self.MFA_ENCRYPTION_KEY is not None and len(self.MFA_ENCRYPTION_KEY.get_secret_value()) < 32:
+            raise ValueError("MFA_ENCRYPTION_KEY must be at least 32 characters.")
+        if self.MFA_ENCRYPTION_KEY is None and self._jwt_secret_is_ephemeral:
+            warnings.warn(
+                "MFA_ENCRYPTION_KEY is not set and JWT_SECRET is ephemeral: authenticator apps set up now stop "
+                "working when the process restarts.", RuntimeWarning, stacklevel=2,
+            )
         return self
 
     @property

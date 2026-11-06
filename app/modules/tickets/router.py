@@ -30,6 +30,8 @@ from app.modules.tickets.model import (
 from app.modules.tickets.service import TicketService, TicketView, TimelineEntry, reference
 from app.modules.tickets.staff import CategoryService, StaffService, StaffView
 from app.workers.runtime import get_runtime
+from app.modules.auth.step_up import StepUp
+from app.core.inputs import MaybeText, Name, PersonName, Phone, Tag, Text
 
 router = APIRouter(prefix="/support", tags=["Support Center"])
 staff_router = APIRouter(prefix="/support/staff", tags=["Support Staff"])
@@ -69,8 +71,8 @@ class SupportCategoryRead(BaseModel):
 
 class TicketCreate(BaseModel):
     category_id: str = Field(min_length=1, max_length=100, description="A category id from GET /support/categories.")
-    subject: str = Field(min_length=3, max_length=300)
-    description: str = Field(min_length=10, max_length=10_000)
+    subject: Name = Field(min_length=3, max_length=300)
+    description: Text = Field(min_length=10, max_length=10_000)
     # None: the AI recommends one (medium without it). The support side may change it later.
     priority: TicketPriority | None = None
     policy_id: uuid.UUID | None = Field(default=None, description="A policy the ticket is about (one you can read).")
@@ -102,6 +104,19 @@ class RoutingConfirm(BaseModel):
     team: TicketTeam = Field(description="The recommended team, or the one the creator switched to.")
 
 
+class ForwardedByRead(BaseModel):
+    """The latest forward or escalation: who sent the ticket to the queue it is in now, from where, and why."""
+
+    by_id: uuid.UUID | None
+    by_name: str | None
+    by_role: str | None
+    from_queue: str | None
+    to_queue: str | None
+    reason: str | None
+    escalation: bool
+    at: datetime
+
+
 class TicketRead(BaseModel):
     id: uuid.UUID
     number: int
@@ -129,6 +144,9 @@ class TicketRead(BaseModel):
     assigned_to_name: str | None
     message_count: int
     can_handle: bool
+    read_only: bool = Field(description="The caller forwarded it to a queue they do not work: they follow it, "
+                                        "but cannot reply, add notes or attach files.")
+    forwarded: ForwardedByRead | None = Field(description="Who forwarded it last, from where and why (null: never).")
     last_reply_body: str | None
     last_reply_by: str | None
     last_reply_at: datetime | None
@@ -200,18 +218,18 @@ class TicketDetail(TicketRead):
 
 
 class Reply(BaseModel):
-    body: str = Field(min_length=1, max_length=10_000)
+    body: Text = Field(min_length=1, max_length=10_000)
     internal: bool = Field(default=False, description="An internal note: never shown to the person who raised it.")
 
 
 class StatusChange(BaseModel):
     status: TicketStatus
-    note: str | None = Field(default=None, max_length=4000, description="Required when resolving (the resolution note).")
+    note: MaybeText = Field(default=None, max_length=4000, description="Required when resolving (the resolution note).")
 
 
 class PriorityChange(BaseModel):
     priority: TicketPriority
-    note: str | None = Field(default=None, max_length=2000)
+    note: MaybeText = Field(default=None, max_length=2000)
 
 
 class AssignTicket(BaseModel):
@@ -220,13 +238,13 @@ class AssignTicket(BaseModel):
 
 class Forward(BaseModel):
     to: Literal["branch", "head_office", "technical", "escalate"]
-    reason: str = Field(min_length=3, max_length=2000)
+    reason: Text = Field(min_length=3, max_length=2000)
     confirmed: bool = Field(description="Must be true: the person forwarding confirms the destination.")
     user_id: uuid.UUID | None = Field(default=None, description="A staff member of the destination queue (else by workload).")
 
 
 class Cancel(BaseModel):
-    note: str | None = Field(default=None, max_length=2000, description="Required when a manager cancels.")
+    note: MaybeText = Field(default=None, max_length=2000, description="Required when a manager cancels.")
 
 
 class QueueAssignee(BaseModel):
@@ -260,7 +278,7 @@ class SupportDashboard(BaseModel):
     unassigned: int
 
 
-Box = Literal["all", "mine", "queue", "assigned", "unassigned"]
+Box = Literal["all", "mine", "queue", "assigned", "unassigned", "forwarded"]
 
 
 def _read(view: TicketView) -> dict[str, Any]:
@@ -272,7 +290,8 @@ def _read(view: TicketView) -> dict[str, Any]:
         policy_id=t.policy_id, policy_name=view.policy_name, subject=t.subject, description=t.description,
         priority=t.priority, status=t.status, created_by_id=t.created_by_id, created_by_name=view.created_by_name,
         created_by_role=view.created_by_role, assigned_to_id=t.assigned_to_id, assigned_to_name=view.assigned_to_name,
-        message_count=view.message_count, can_handle=view.can_handle,
+        message_count=view.message_count, can_handle=view.can_handle, read_only=view.read_only,
+        forwarded=ForwardedByRead(**vars(view.forwarded)) if view.forwarded else None,
         last_reply_body=reply.body if (reply := view.last_reply) else None,
         last_reply_by=reply.author_name if reply else None, last_reply_at=reply.at if reply else None,
         created_at=t.created_at, updated_at=t.updated_at, confirmed_at=t.confirmed_at,
@@ -345,7 +364,8 @@ def list_tickets(
     search: Annotated[str | None, Query(max_length=200, description="Subject, details, category, creator, policy, SUP-number")] = None,
 ):
     """box: mine (raised by me), queue (the queues I work or manage), assigned (to me), unassigned (in my
-    queues), all (everything I may see, including what I oversee)."""
+    queues), forwarded (forwarded by me to a queue I do not work: read-only), all (everything I may see,
+    including what I oversee)."""
     views, total = service.find(principal, box=box, status=status, team=team, priority=priority, overdue=overdue,
                                 assignee=assignee, search=search, limit=page.limit, offset=page.offset)
     return ok(Page(items=[TicketRead(**_read(v)) for v in views], total=total, **page.model_dump()))
@@ -408,7 +428,8 @@ class ForwardResult(BaseModel):
     team: TicketTeam
     queue_name: str
     assigned_to_name: str | None
-    # The ticket as the caller now sees it; null when it left every queue they work or oversee.
+    # The ticket as the caller now sees it: read-only when it left every queue they work. null only for a
+    # client that cannot open it (kept for compatibility; the person forwarding always can).
     ticket: TicketDetail | None
 
 
@@ -416,8 +437,9 @@ class ForwardResult(BaseModel):
 def forward(ticket_id: uuid.UUID, body: Forward, principal: Supporter, service: Service):
     """Forward to Branch Support, Head Office Support or Technical Support (or `escalate`: one level up), with a
     reason and confirmed=true. The ticket keeps its history and SLA; it is assigned in the new queue by workload
-    (or to `user_id`). The handling team forwards; the creator may escalate an overdue ticket. `ticket` is null
-    when the caller can no longer see it (it left their queue)."""
+    (or to `user_id`), who is told who forwarded it, from where and why. The handling team forwards; the creator
+    may escalate an overdue ticket. The person forwarding keeps following the ticket, read-only (`read_only`),
+    in the `forwarded` box."""
     ticket = service.forward(principal, ticket_id, to=body.to, reason=body.reason, confirmed=body.confirmed,
                              user_id=body.user_id)
     summary = service.forwarded(ticket)
@@ -436,7 +458,7 @@ def cancel(ticket_id: uuid.UUID, body: Cancel, principal: Supporter, service: Se
 
 
 @router.post("/tickets/{ticket_id}/attachments", response_model=ApiResponse[TicketDetail], status_code=201,
-             responses=_errors(404, 409, 413, 422))
+             responses=_errors(403, 404, 409, 413, 422))
 def attach(ticket_id: uuid.UUID, principal: Supporter, service: Service, file: Annotated[UploadFile, File()]):
     """PDF, image, text, CSV, Word or Excel, up to 10 MB."""
     service.attach(principal, ticket_id, file=file.file, filename=file.filename or "attachment")
@@ -458,9 +480,9 @@ def download_attachment(ticket_id: uuid.UUID, attachment_id: uuid.UUID, principa
 # --- staff -------------------------------------------------------------------------------------------------------
 
 class NewAgent(BaseModel):
-    full_name: str = Field(min_length=2, max_length=200)
+    full_name: PersonName = Field(min_length=2, max_length=200)
     email: EmailStr
-    phone: str | None = Field(default=None, max_length=50)
+    phone: Phone = None
 
 
 class StaffCreate(BaseModel):
@@ -469,7 +491,7 @@ class StaffCreate(BaseModel):
     new_account: NewAgent | None = Field(default=None, description="Platform only: create a support agent account.")
     branch_id: uuid.UUID | None = Field(default=None, description="Branch level: the branch (a Branch Manager's own).")
     staff_role: StaffRole = StaffRole.AGENT
-    skills: list[str] = Field(default_factory=list, max_length=30)
+    skills: list[Tag] = Field(default_factory=list, max_length=30)
     capacity: int = Field(default=10, ge=1, le=500)
     availability: StaffAvailability = StaffAvailability.AVAILABLE
     serves: list[uuid.UUID] | None = Field(default=None, description="Platform only: banks served (none: all).")
@@ -477,7 +499,7 @@ class StaffCreate(BaseModel):
 
 class StaffUpdate(BaseModel):
     staff_role: StaffRole | None = None
-    skills: list[str] | None = Field(default=None, max_length=30)
+    skills: list[Tag] | None = Field(default=None, max_length=30)
     capacity: int | None = Field(default=None, ge=1, le=500)
     availability: StaffAvailability | None = None
     is_active: bool | None = None
@@ -530,7 +552,7 @@ class StaffCandidate(BaseModel):
 
 
 class ReassignOpen(BaseModel):
-    note: str | None = Field(default=None, max_length=500)
+    note: MaybeText = Field(default=None, max_length=500)
 
 
 class Reassigned(BaseModel):
@@ -578,9 +600,11 @@ def staff_candidates(principal: StaffManager, staff: StaffServiceDep, level: Tic
 
 
 @staff_router.post("", response_model=ApiResponse[StaffCreated], status_code=201, responses=_errors(403, 409, 422))
-def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep):
+def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep, confirm_code: StepUp):
     """Put someone on support duty, with their skills, capacity and availability. The Master Admin may create
-    a new support agent account instead (new_account); its temporary password is returned once."""
+    a new support agent account instead (new_account); its temporary password is returned once. Needs an
+    authenticator code: support staff read other people's tickets."""
+    confirm_code("support_staff.added")
     created, password = staff.create(
         principal, level=body.level, user_id=body.user_id,
         new_account=body.new_account.model_dump() if body.new_account else None, branch_id=body.branch_id,
@@ -629,15 +653,15 @@ def reassign_open(staff_id: uuid.UUID, body: ReassignOpen, principal: StaffManag
 # --- categories (Organization Admin) -----------------------------------------------------------------------------
 
 class SupportCategoryCreate(BaseModel):
-    name: str = Field(min_length=2, max_length=100)
+    name: Name = Field(min_length=2, max_length=100)
     route: CategoryRoute = CategoryRoute.AUTO
-    description: str | None = Field(default=None, max_length=300)
+    description: MaybeText = Field(default=None, max_length=300)
 
 
 class SupportCategoryUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=2, max_length=100)
+    name: Name | None = Field(default=None, min_length=2, max_length=100)
     route: CategoryRoute | None = None
-    description: str | None = Field(default=None, max_length=300)
+    description: MaybeText = Field(default=None, max_length=300)
     is_active: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=100_000)
 

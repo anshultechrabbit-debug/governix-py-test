@@ -67,6 +67,8 @@ def settings(tmp_path: Path, test_database_url: str) -> Settings:
         JOB_LEASE_SECONDS=60,
         EMBEDDING_PROVIDER="local",
         LLM_PROVIDER="local",
+        # Most tests act as admins without an authenticator; test_step_up.py turns it on.
+        STEP_UP_ENABLED=False,
     )
 
 

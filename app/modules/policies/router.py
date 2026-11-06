@@ -31,6 +31,7 @@ from app.modules.categories.contents import versions_with_files
 from app.modules.categories.schema import CategoryVersion
 from app.modules.policies.service import PolicyService, today, version_read
 from app.modules.versions.summary import SUMMARIZE, summary_view
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(tags=["policies"])
 
@@ -103,14 +104,18 @@ def compare_versions(
 
 @router.post("/policies/{policy_id}/versions/{version_id}/withdraw", response_model=ApiResponse[VersionDetail])
 def withdraw_version(
-    policy_id: uuid.UUID, version_id: uuid.UUID, body: WithdrawRequest, principal: Manager, service: Service
+    policy_id: uuid.UUID, version_id: uuid.UUID, body: WithdrawRequest, principal: Manager, service: Service,
+    confirm_code: StepUp,
 ):
+    confirm_code("policy_version.withdrawn")
     return ok(VersionDetail.model_validate(service.withdraw(principal, policy_id, version_id, body.reason)))
 
 
 @router.post("/policies/{policy_id}/versions/{version_id}/restore", response_model=ApiResponse[VersionDetail])
-def restore_version(policy_id: uuid.UUID, version_id: uuid.UUID, principal: Manager, service: Service):
+def restore_version(policy_id: uuid.UUID, version_id: uuid.UUID, principal: Manager, service: Service,
+                    confirm_code: StepUp):
     """Activate an archived version: it rejoins the effective-date timeline."""
+    confirm_code("policy_version.restored")
     version = service.restore(principal, policy_id, version_id)
     detail = VersionDetail.model_validate(version)
     detail.timeline_state = version_read(version, today()).timeline_state
@@ -157,8 +162,10 @@ def regenerate_summary(
 @router.delete("/policies/{policy_id}", response_model=ApiResponse[dict])
 def delete_policy(
     policy_id: uuid.UUID, principal: Manager, service: Service, storage: Annotated[Storage, Depends(get_storage)],
+    confirm_code: StepUp,
 ):
     """Delete a policy permanently, with every version, document and stored file."""
+    confirm_code("policy.deleted")
     return ok(service.delete(principal, policy_id, storage))
 
 

@@ -2,6 +2,7 @@
 
     python -m app.cli create-master-admin --email admin@example.com --name "Platform Admin"
     python -m app.cli reembed [--organization ORG_ID]   (after changing the embedding model)
+    python -m app.cli reset-two-step --email admin@example.com   (lost authenticator, no admin above to reset it)
 
 The password is read from GOVERNIX_ADMIN_PASSWORD or prompted for; it is never
 accepted as a command-line argument (shell history, process listings).
@@ -15,7 +16,7 @@ import sys
 from app.core.config import get_settings
 from app.core.database import create_db_engine, create_session_factory
 from app.core.exceptions import AppError
-from app.core.security import MIN_PASSWORD_LENGTH
+from app.core.inputs import password_problems
 
 
 def create_master_admin(args: argparse.Namespace) -> None:
@@ -24,8 +25,9 @@ def create_master_admin(args: argparse.Namespace) -> None:
 
     import_all_models()
     password = os.environ.get("GOVERNIX_ADMIN_PASSWORD") or getpass.getpass("Password: ")
-    if len(password) < MIN_PASSWORD_LENGTH:
-        sys.exit(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    problems = password_problems(password, email=args.email, name=args.name)
+    if problems:
+        sys.exit("The password must " + "; ".join(problems) + ".")
     engine = create_db_engine(get_settings())
     try:
         with create_session_factory(engine)() as session:
@@ -33,6 +35,43 @@ def create_master_admin(args: argparse.Namespace) -> None:
         print(f"Created master admin {user.email} ({user.id})")
     except AppError as exc:
         sys.exit(exc.message)
+    finally:
+        engine.dispose()
+
+
+def reset_two_step(args: argparse.Namespace) -> None:
+    """Break glass: turn off someone's two-step sign-in from the server (the Master Admin has nobody above them to
+    reset it in the app). Signs them out everywhere, audits it and alerts them and their managers."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func, select, update
+
+    from app.core.model_registry import import_all_models
+    from app.modules.audit.service import record_event
+    from app.modules.auth import alerts
+    from app.modules.auth.model import RefreshToken
+    from app.modules.auth.service import clear_mfa
+    from app.modules.users.model import User
+
+    import_all_models()
+    engine = create_db_engine(get_settings())
+    try:
+        with create_session_factory(engine)() as session:
+            user = session.scalar(select(User).where(func.lower(User.email) == args.email.lower(),
+                                                     User.deleted_at.is_(None)).with_for_update())
+            if user is None:
+                sys.exit(f"No account uses {args.email}.")
+            if user.mfa_enabled_at is None and user.mfa_secret is None:
+                sys.exit(f"Two-step sign-in is not on for {user.email}.")
+            clear_mfa(session, user)
+            user.token_version += 1
+            session.execute(update(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+                            .values(revoked_at=datetime.now(UTC)))
+            record_event(session, "user.mfa_reset", organization_id=user.organization_id, resource_type="user",
+                         resource_id=user.id, details={"by": "server command line"})
+            alerts.two_step_changed(session, user, "reset")
+            session.commit()
+        print(f"Two-step sign-in reset for {args.email}. They sign in with their password and can set it up again.")
     finally:
         engine.dispose()
 
@@ -114,6 +153,10 @@ def main() -> None:
     admin.add_argument("--email", required=True)
     admin.add_argument("--name", required=True)
     admin.set_defaults(handler=create_master_admin)
+
+    two_step = commands.add_parser("reset-two-step", help="Turn off an account's two-step sign-in (lost authenticator)")
+    two_step.add_argument("--email", required=True)
+    two_step.set_defaults(handler=reset_two_step)
 
     seed = commands.add_parser("seed", help="Seed the database with test organizations, branches, and users")
     seed.set_defaults(handler=seed_db)

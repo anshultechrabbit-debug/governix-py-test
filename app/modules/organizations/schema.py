@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.config import get_settings
 from app.modules.organizations.model import OrganizationStatus
-from app.modules.users.schema import MIN_PASSWORD_LENGTH
+from app.core.inputs import MaybeText, Name, NewPassword, PersonName, Phone, Website
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$"
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
@@ -22,9 +22,9 @@ class Branding(BaseModel):
     secondary_color: str | None = Field(default=None, pattern=COLOR_PATTERN)
     brand_font: str | None = None
     contact_email: EmailStr | None = None
-    contact_phone: str | None = Field(default=None, max_length=50)
-    website: str | None = Field(default=None, max_length=300)
-    address: str | None = Field(default=None, max_length=2000)
+    contact_phone: Phone = None
+    website: Website = None
+    address: MaybeText = Field(default=None, max_length=2000)
     # Checked against TENANT_PORT_MIN..MAX and other organizations by the service.
     allowed_port: int | None = None
 
@@ -40,18 +40,18 @@ class FirstAdmin(BaseModel):
     """The organisation's first admin, created with it (spec §7.2-7.3)."""
 
     email: EmailStr
-    full_name: str = Field(min_length=2, max_length=200)
-    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=1024)
+    full_name: PersonName = Field(min_length=2, max_length=200)
+    password: NewPassword
 
 
 class OrganizationCreate(Branding):
-    name: str = Field(min_length=2, max_length=200)
+    name: Name = Field(min_length=2, max_length=200)
     slug: str = Field(pattern=SLUG_PATTERN)
     admin: FirstAdmin | None = None
 
 
 class OrganizationUpdate(Branding):
-    name: str | None = Field(default=None, min_length=2, max_length=200)
+    name: Name | None = Field(default=None, min_length=2, max_length=200)
     status: OrganizationStatus | None = None
 
 

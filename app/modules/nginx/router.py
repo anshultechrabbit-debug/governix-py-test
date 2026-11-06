@@ -12,6 +12,7 @@ from app.modules.auth.dependencies import require
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.nginx.schema import NginxDetail, NginxOverview
 from app.modules.nginx.service import NginxService
+from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/nginx", tags=["nginx"])
 
@@ -38,10 +39,12 @@ def detail(organization_id: uuid.UUID, principal: MasterAdmin, service: Service)
 
 
 @router.post("/{organization_id}/deploy", response_model=ApiResponse[NginxDetail])
-def deploy(organization_id: uuid.UUID, principal: MasterAdmin, service: Service):
+def deploy(organization_id: uuid.UUID, principal: MasterAdmin, service: Service, confirm_code: StepUp):
+    confirm_code("organization.nginx_deployed")
     return ok(service.deploy(principal, organization_id))
 
 
 @router.post("/{organization_id}/disable", response_model=ApiResponse[NginxDetail])
-def disable(organization_id: uuid.UUID, principal: MasterAdmin, service: Service):
+def disable(organization_id: uuid.UUID, principal: MasterAdmin, service: Service, confirm_code: StepUp):
+    confirm_code("organization.nginx_disabled")
     return ok(service.disable(principal, organization_id))

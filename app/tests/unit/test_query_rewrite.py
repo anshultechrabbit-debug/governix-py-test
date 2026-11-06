@@ -4,7 +4,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.infrastructure.ai.llm.base import LLMUnavailableError
-from app.modules.rag.query_rewrite import is_non_english, refers_to_earlier_turn, standalone_question
+from app.modules.rag.query_rewrite import (
+    is_non_english, refers_to_earlier_turn, standalone_question, without_opener,
+)
 from app.modules.rag.schema import ConversationTurn
 
 
@@ -259,3 +261,26 @@ def test_a_translation_may_reword_but_never_refigure():
 
     assert _same_figures("The fee of 2% is Rs. 10,000.", "La comisión del 2% es de Rs. 10,000.")
     assert not _same_figures("The fee of 2% is Rs. 10,000.", "La comisión del 3% es de Rs. 10,000.")
+
+
+@pytest.mark.parametrize("message, question", [
+    ("okay then tell me about the Mortgage Loan Policy", "tell me about the Mortgage Loan Policy"),
+    ("ok, what is the LTV?", "what is the LTV?"),
+    ("So what about Version 2.0?", "what about Version 2.0?"),
+    ("hmm... which documents do you have?", "which documents do you have?"),
+    ("Well, now what is the fee?", "what is the fee?"),
+])
+def test_an_opening_interjection_is_set_aside(message, question):
+    assert without_opener(message) == question
+
+
+@pytest.mark.parametrize("message", [
+    "ok", "okay then", "So far, which documents have you read?", "Now that I have prepaid, is there a fee?",
+    "Well-known customers get a discount?", "Then-current rates applied?", "Some fees apply?",
+])
+def test_a_message_that_is_only_an_interjection_or_starts_with_a_real_word_is_kept(message):
+    assert without_opener(message) == message
+
+
+def test_without_a_model_the_rewrite_gives_no_verdict_on_documents():
+    assert standalone_question(None, "Which documents are assigned to me?", []).kind is None

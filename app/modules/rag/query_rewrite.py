@@ -149,8 +149,9 @@ class Rewrite:
     # Words the model judged to frame the ask rather than name its subject ("something", "so far"), lower case.
     # Only a hint: RAGService._framing never lets one of them drop a word that no document uses.
     framing: frozenset[str] = frozenset()
-    # "documents": the message asks which documents the assistant has ("What have you read so far?").
-    kind: str = "question"
+    # "documents": the message asks which documents the assistant has ("What have you read so far?"); "question"
+    # otherwise. None: no model read it (local stand-in, outage), and evidence.documents_held decides alone.
+    kind: str | None = None
 
 
 # The things a question compares, named in the question itself ("both versions", "v1 and v2").
@@ -244,6 +245,23 @@ def from_form(message: str) -> str:
         return asked + end
     stated = facts[0] if len(facts) == 1 else ", ".join(facts[:-1]) + " and " + facts[-1]
     return f"{stated[0].upper()}{stated[1:]}. {asked}{end}"
+
+
+# Interjections and discourse markers that open a message ("okay then tell me about ...", "so what about v2?",
+# "hmm, which documents ..."): they pace the conversation, and the question starts after them. Not "so far",
+# "now that", "well-known", "then" as a word of the question ("then-current").
+_OPENER = re.compile(
+    r"^\s*(?:(?:ok(?:ay|ey)?|okk+|alright|all\s+right|hmm+|um+|uh+|oh|ah+|yeah|yep|yup|well|"
+    r"so(?!\s+(?:far|much|many|long)\b)|then|now(?!\s+that\b))(?:[\s,.!:;]+|$))+",
+    re.I,
+)
+
+
+def without_opener(message: str) -> str:
+    """The message without the interjections it opens with ("okay then tell me about X" -> "tell me about X").
+    A message that is nothing else ("ok", "okay then") is kept as typed."""
+    rest = _OPENER.sub("", message, count=1)
+    return rest if rest != message and re.search(r"[^\W\d_]{2,}", rest) else message
 
 
 def question_lines(message: str) -> int:

@@ -56,6 +56,12 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "auth.password_changed": ("Password changed", "Sign-in & security"),
     "auth.password_reset_requested": ("Password reset requested", "Sign-in & security"),
     "auth.password_reset_completed": ("Password reset completed", "Sign-in & security"),
+    "auth.mfa_enabled": ("Two-step sign-in turned on", "Sign-in & security"),
+    "auth.mfa_disabled": ("Two-step sign-in turned off", "Sign-in & security"),
+    "auth.mfa_recovery_used": ("Backup code used", "Sign-in & security"),
+    "auth.mfa_recovery_codes_renewed": ("New backup codes", "Sign-in & security"),
+    "auth.step_up_failed": ("Wrong code for an important action", "Sign-in & security"),
+    "user.mfa_reset": ("Two-step sign-in reset by admin", "Users"),
     "user.created": ("User added", "Users"),
     "user.updated": ("User updated", "Users"),
     "user.deleted": ("User deleted", "Users"),
@@ -122,6 +128,7 @@ _WARNING = frozenset({
     "auth.login_failed", "user.deleted", "organization.deleted", "branch.deleted", "department.deleted",
     "organization.nginx_disabled", "policy.deleted", "policy_version.withdrawn", "document.deleted",
     "document.rejected", "document.duplicate_override", "user.password_reset",
+    "auth.mfa_disabled", "auth.mfa_recovery_used", "user.mfa_reset", "auth.step_up_failed",
 })
 
 # Why the assistant gave no answer, as the reader would put it.
@@ -307,10 +314,38 @@ def _ai_query(c: _Context) -> str:
                                                if reason else ".")
 
 
+_STEP_UP_ACTION = {
+    "user.create": "adding a user", "user.update": "changing a user's access", "user.delete": "deleting a user",
+    "user.password_reset": "resetting a password", "user.mfa_reset": "resetting two-step sign-in",
+    "organization.status": "suspending or reactivating an organization", "organization.delete": "deleting an organization",
+    "branch.delete": "deleting a branch", "department.delete": "deleting a department",
+    "organization.nginx_deployed": "publishing a portal", "organization.nginx_disabled": "taking a portal offline",
+    "policy_version.withdrawn": "withdrawing a policy version", "policy_version.restored": "restoring a policy version",
+    "policy.deleted": "deleting a policy", "document.deleted": "deleting a document",
+    "support_staff.added": "adding support staff",
+}
+
+
+def _step_up_failed(c: _Context) -> str:
+    action = _STEP_UP_ACTION.get(c.d.get("action"), str(c.d.get("action") or "an important action"))
+    how = "an authenticator code that was already used" if c.d.get("reused") else "a wrong authenticator code"
+    return f"{c.actor} tried {action} with {how}. Nothing was changed."
+
+
 SENTENCES: dict[str, Callable[[_Context], str]] = {
-    "auth.login": lambda c: f"{c.actor} signed in.",
-    "auth.login_failed": lambda c: f"Someone tried to sign in as {c.target} with a wrong password."
+    "auth.login": lambda c: f"{c.actor} signed in"
+    + {"app": " with their authenticator app.", "recovery": " with a backup code."}.get(c.d.get("two_step"), "."),
+    "auth.login_failed": lambda c: f"Someone tried to sign in as {c.target} with a wrong "
+    + ("authenticator code (the password was right)." if c.d.get("step") else "password.")
     + (" The account is now locked for a while." if c.d.get("locked") else ""),
+    "auth.mfa_enabled": lambda c: f"{c.actor} turned on two-step sign-in with an authenticator app.",
+    "auth.mfa_disabled": lambda c: f"{c.actor} turned off two-step sign-in.",
+    "auth.mfa_recovery_used": lambda c: f"A backup code of {c.target} was used to sign in. "
+    f"{c.d.get('left', 'Some')} backup codes are left.",
+    "auth.mfa_recovery_codes_renewed": lambda c: f"{c.actor} replaced their backup codes. The old ones no longer work.",
+    "auth.step_up_failed": lambda c: _step_up_failed(c),
+    "user.mfa_reset": lambda c: f"{c.actor} reset the two-step sign-in of {c.target}. They were signed out everywhere "
+    "and can set it up again.",
     "auth.refresh_token_reuse": lambda c: f"An old session token of {c.target} was used again, which can mean it was "
     "stolen. All of their sessions were signed out as a precaution.",
     "auth.password_changed": lambda c: f"{c.actor} changed their password.",

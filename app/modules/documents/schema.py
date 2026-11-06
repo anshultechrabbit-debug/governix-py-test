@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.core.inputs import Name
 
 
 class StageProgress(BaseModel):
@@ -57,7 +58,7 @@ class DocumentDetail(DocumentRead):
 
 
 class DocumentUpdate(BaseModel):
-    title: str | None = Field(default=None, min_length=1, max_length=500)
+    title: Name | None = Field(default=None, min_length=1, max_length=500)
     category_id: uuid.UUID | None = None
     branch_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, func
+from sqlalchemy import BigInteger, CheckConstraint, DateTime, ForeignKey, Index, String, func
 from sqlalchemy import text as sql
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,6 +31,15 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     failed_login_attempts: Mapped[int] = mapped_column(default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Two-step sign-in (auth/mfa.py). The authenticator secret, encrypted; set but not enabled while being set up.
+    mfa_secret: Mapped[str | None] = mapped_column(String(512))
+    mfa_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The last 30-second step whose code was accepted: a code is never accepted twice.
+    mfa_last_step: Mapped[int | None] = mapped_column(BigInteger)
+
+    @property
+    def mfa_enabled(self) -> bool:
+        return self.mfa_enabled_at is not None
 
     __table_args__ = (
         # A deleted account frees its email for a new one.

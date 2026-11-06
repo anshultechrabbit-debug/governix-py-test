@@ -3,6 +3,7 @@ from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
+from app.core.inputs import Name, Text
 
 
 class ConversationTurn(BaseModel):
@@ -23,7 +24,7 @@ class ConversationTurn(BaseModel):
 
 
 class AskRequest(BaseModel):
-    question: str = Field(min_length=2, max_length=2000)
+    question: Text = Field(min_length=2, max_length=2000)
     # Earlier turns of this conversation, oldest first. Never used as evidence.
     history: list[ConversationTurn] = Field(default_factory=list, max_length=10)
     # auto: decided from the question; the others mirror the UI selector.
@@ -115,4 +116,4 @@ class ConversationDetail(ConversationRead):
 
 
 class ConversationUpdate(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: Name = Field(min_length=1, max_length=200)

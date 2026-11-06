@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, BinaryIO
 
-from sqlalchemy import Text, cast, func, or_, select
+from sqlalchemy import Text, cast, func, not_, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.core.config import Settings
@@ -51,6 +51,7 @@ from app.modules.tickets.queues import (
     Duty,
     can_handle,
     can_manage,
+    forwarded_by_clause,
     handling_clause,
     load_duty,
     manager_ids,
@@ -106,6 +107,20 @@ class LastReply:
 
 
 @dataclass
+class ForwardedBy:
+    """The latest forward or escalation: who sent the ticket to the queue it is in now, from where, and why."""
+
+    by_id: uuid.UUID | None
+    by_name: str | None
+    by_role: str | None
+    from_queue: str | None
+    to_queue: str | None
+    reason: str | None
+    escalation: bool
+    at: datetime
+
+
+@dataclass
 class TicketView:
     ticket: Ticket
     created_by_name: str | None
@@ -118,6 +133,9 @@ class TicketView:
     organization_name: str | None = None
     branch_name: str | None = None
     last_reply: LastReply | None = None
+    forwarded: ForwardedBy | None = None
+    # The caller forwarded it to a queue they do not work: they follow it, but cannot reply, note or attach.
+    read_only: bool = False
     actions: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -273,7 +291,8 @@ class TicketService:
     # --- assignment ------------------------------------------------------------------------------------------
 
     def _auto_assign(self, actor: Principal | None, ticket: Ticket, *,
-                     exclude: frozenset[uuid.UUID] = frozenset(), why: str | None = None) -> User | None:
+                     exclude: frozenset[uuid.UUID] = frozenset(), why: str | None = None,
+                     forwarded: str | None = None) -> User | None:
         """Give the ticket to the best eligible staff member of its queue, or leave it unassigned and tell the
         queue's managers. The caller holds the ticket's row lock."""
         found = assignment.best(self.session, ticket, exclude=exclude)
@@ -297,12 +316,14 @@ class TicketService:
                        data={"ticket_id": str(ticket.id)}, exclude=actor.user_id if actor else None)
             return None
         user = self.session.get(User, found.staff.user_id)
-        self._set_assignee(actor, ticket, user, auto=True, why=why, load=found.explain())
+        self._set_assignee(actor, ticket, user, auto=True, why=why, load=found.explain(), forwarded=forwarded)
         found.staff.last_assigned_at = datetime.now(UTC)
         return user
 
     def _set_assignee(self, actor: Principal | None, ticket: Ticket, user: User | None, *, auto: bool,
-                      why: str | None = None, load: dict | None = None) -> None:
+                      why: str | None = None, load: dict | None = None, forwarded: str | None = None) -> None:
+        """`forwarded`: who forwarded it, from where and why, told to the new assignee (not written on the
+        timeline: the forward entry already says it)."""
         previous = ticket.assigned_to_id
         ticket.assigned_to_id = user.id if user else None
         self.session.add(TicketMessage(
@@ -318,8 +339,9 @@ class TicketService:
         exclude = actor.user_id if actor else None
         if user is not None:
             notify(self.session, [user.id], NotificationType.TICKET_ASSIGNED,
-                   f"Assigned to you: {reference(ticket)} {ticket.subject}", organization_id=ticket.organization_id,
-                   body=why, link=f"/support/{ticket.id}", data={"ticket_id": str(ticket.id)}, exclude=exclude)
+                   f"{'Forwarded' if forwarded else 'Assigned'} to you: {reference(ticket)} {ticket.subject}",
+                   organization_id=ticket.organization_id, body=forwarded or why, link=f"/support/{ticket.id}",
+                   data={"ticket_id": str(ticket.id)}, exclude=exclude)
         if previous and previous != (user.id if user else None):
             notify(self.session, [previous], NotificationType.TICKET_ASSIGNED,
                    f"Reassigned: {reference(ticket)} {ticket.subject}",
@@ -458,17 +480,37 @@ class TicketService:
                f"{reference(ticket)} is now with {destination['queue']}", body=reason,
                organization_id=ticket.organization_id, link=f"/support/{ticket.id}",
                data={"ticket_id": str(ticket.id)}, exclude=exclude)
+        # The new assignee is told who sent it, from where and why, so they can answer accordingly.
+        sender = self.session.get(User, principal.user_id)
+        notice = (f"{sender.full_name if sender else 'Someone'} {'escalated' if escalation else 'forwarded'} it "
+                  f"from {source['queue']}: {reason}")
         if user_id is not None:
             if user_id not in self._queue_member_ids(ticket) or user_id == ticket.created_by_id:
                 raise ValidationError("That person is not on duty in that queue.", code="NOT_IN_QUEUE")
-            self._set_assignee(principal, ticket, self.session.get(User, user_id), auto=False)
+            self._set_assignee(principal, ticket, self.session.get(User, user_id), auto=False, forwarded=notice)
         else:
-            self._auto_assign(principal, ticket)  # or, with nobody available, the queue's managers are told
+            # or, with nobody available, the queue's managers are told
+            self._auto_assign(principal, ticket, forwarded=notice)
         self.session.commit()
         return ticket
 
+    def _forwarded_away(self, principal: Principal, duty: Duty, ticket: Ticket) -> bool:
+        """The caller forwarded this ticket and no longer works its queue: they follow it, read-only. The
+        creator and the handling team are never read-only (a ticket forwarded back is theirs again)."""
+        if ticket.created_by_id == principal.user_id or can_handle(principal, duty, ticket):
+            return False
+        return self.session.scalar(
+            select(TicketMessage.id).where(TicketMessage.ticket_id == ticket.id, TicketMessage.kind == MessageKind.FORWARD,
+                                           TicketMessage.author_id == principal.user_id).limit(1)) is not None
+
+    def _refuse_if_forwarded_away(self, principal: Principal, ticket: Ticket) -> None:
+        if self._forwarded_away(principal, self.duty(principal), ticket):
+            raise PermissionDeniedError(
+                f"You forwarded this ticket to {queue_name(self.session, ticket.level, ticket.branch_id)}. "
+                "You can follow it, but only that team answers it now.", code="TICKET_FORWARDED_AWAY")
+
     def forwarded(self, ticket: Ticket) -> dict[str, Any]:
-        """Where a forwarded ticket went, for a caller who may no longer see it."""
+        """Where a forwarded ticket went."""
         assignee = self.session.get(User, ticket.assigned_to_id) if ticket.assigned_to_id else None
         return {"reference": reference(ticket), "level": ticket.level, "team": ticket.team,
                 "queue_name": queue_name(self.session, ticket.level, ticket.branch_id),
@@ -483,6 +525,7 @@ class TicketService:
             raise ConflictError("This ticket is closed. Reopen it to reply.", code="INVALID_STATE")
         if ticket.status == TicketStatus.AWAITING_CONFIRMATION:
             raise ConflictError("Confirm where the ticket goes first.", code="INVALID_STATE")
+        self._refuse_if_forwarded_away(principal, ticket)
         handling = can_handle(principal, duty, ticket)
         if internal and not reads_notes_of(principal, duty, ticket, ticket.level):
             raise PermissionDeniedError("Only the team handling this ticket writes internal notes.")
@@ -663,6 +706,11 @@ class TicketService:
         if box == "unassigned":
             return query.where(handling_clause(principal, duty), Ticket.assigned_to_id.is_(None),
                                Ticket.status.in_(list(ACTIVE_STATUSES)))
+        if box == "forwarded":
+            # Forwarded by me and now with a queue I do not work: the ones I follow read-only. IS NOT true,
+            # because the handling clause is NULL (not false) for an unassigned ticket.
+            return query.where(forwarded_by_clause(principal), handling_clause(principal, duty).is_not(True),
+                               or_(Ticket.created_by_id.is_(None), Ticket.created_by_id != principal.user_id))
         # all: drafts are their creator's only
         return query.where(or_(Ticket.status != TicketStatus.AWAITING_CONFIRMATION,
                                Ticket.created_by_id == principal.user_id))
@@ -775,34 +823,67 @@ class TicketService:
             select(Policy.id, Policy.name).where(Policy.id.in_({t.policy_id for t in tickets} - {None}))
         ).all())
         replies = self._last_replies(tickets)
+        forwards = self._last_forwards(tickets)
+        sent_by_me = set(self.session.scalars(
+            select(TicketMessage.ticket_id).where(TicketMessage.ticket_id.in_([t.id for t in tickets]),
+                                                  TicketMessage.kind == MessageKind.FORWARD,
+                                                  TicketMessage.author_id == principal.user_id).distinct()))
         views = []
         for t in tickets:
             label = QUEUE_LABEL[TicketLevel(t.level)]
             if t.level == TicketLevel.BRANCH and t.branch_id in branches:
                 label = f"{label} · {branches[t.branch_id]}"
+            handles = can_handle(principal, duty, t)
             view = TicketView(
                 t, users.get(t.created_by_id, (None, None))[0], users.get(t.created_by_id, (None, None))[1],
-                users.get(t.assigned_to_id, (None, None))[0], counts.get(t.id, 0), can_handle(principal, duty, t),
+                users.get(t.assigned_to_id, (None, None))[0], counts.get(t.id, 0), handles,
                 label, policies.get(t.policy_id), organizations.get(t.organization_id), branches.get(t.branch_id),
-                replies.get(t.id),
+                replies.get(t.id), forwards.get(t.id),
+                # the same rule as _forwarded_away, from the batch
+                read_only=t.id in sent_by_me and not handles and t.created_by_id != principal.user_id,
             )
             if with_actions:
-                view.actions = self._actions(principal, duty, t)
+                view.actions = self._actions(principal, duty, t, read_only=view.read_only)
             views.append(view)
         return views
 
-    def _actions(self, principal: Principal, duty: Duty, ticket: Ticket) -> dict[str, Any]:
-        """What the caller may do now. The UI shows these; the endpoints check the same rules again."""
+    def _last_forwards(self, tickets: list[Ticket]) -> dict[uuid.UUID, ForwardedBy]:
+        """Each ticket's latest forward or escalation (not the creator's first routing)."""
+        author = aliased(User)
+        ranked = (
+            select(TicketMessage.ticket_id, TicketMessage.author_id, TicketMessage.body, TicketMessage.data,
+                   TicketMessage.created_at, author.full_name.label("name"), author.role.label("role"),
+                   func.row_number().over(partition_by=TicketMessage.ticket_id,
+                                          order_by=(TicketMessage.created_at.desc(), TicketMessage.id.desc())).label("n"))
+            .outerjoin(author, author.id == TicketMessage.author_id)
+            .where(TicketMessage.ticket_id.in_([t.id for t in tickets]), TicketMessage.kind == MessageKind.FORWARD,
+                   not_(TicketMessage.data.has_key("initial")))
+            .subquery()
+        )
+        found = {}
+        for row in self.session.execute(select(ranked).where(ranked.c.n == 1)).all():
+            data = row.data or {}
+            found[row.ticket_id] = ForwardedBy(
+                by_id=row.author_id, by_name=row.name, by_role=row.role,
+                from_queue=(data.get("from") or {}).get("queue"), to_queue=(data.get("to") or {}).get("queue"),
+                reason=row.body, escalation=bool(data.get("escalation")), at=row.created_at,
+            )
+        return found
+
+    def _actions(self, principal: Principal, duty: Duty, ticket: Ticket, *, read_only: bool = False) -> dict[str, Any]:
+        """What the caller may do now. The UI shows these; the endpoints check the same rules again.
+        read_only: they forwarded it away, so they only follow it (the other actions already need the queue)."""
         handler = can_handle(principal, duty, ticket)
         creator = ticket.created_by_id == principal.user_id
         manager = can_manage(principal, duty, ticket)
         active = ticket.status in ACTIVE_STATUSES
         draft = ticket.status == TicketStatus.AWAITING_CONFIRMATION
         next_level = ESCALATES_TO.get(TicketLevel(ticket.level))
+        writable = not draft and ticket.status not in FINISHED and not read_only
         return {
             "confirm": creator and draft,
-            "reply": not draft and ticket.status not in FINISHED,
-            "note": not draft and ticket.status not in FINISHED and reads_notes_of(principal, duty, ticket, ticket.level),
+            "reply": writable,
+            "note": writable and reads_notes_of(principal, duty, ticket, ticket.level),
             "statuses": self.allowed_statuses(principal, ticket),
             "cancel": (creator and (draft or active)) or (manager and active),
             "forward": self.destinations(ticket) if handler and active else [],
@@ -812,7 +893,7 @@ class TicketService:
             and works_queue(duty, ticket.level, ticket.organization_id, ticket.branch_id),
             "assign": manager and active,
             "priority": handler and not draft and ticket.status not in FINISHED,
-            "attach": ticket.status not in FINISHED,
+            "attach": ticket.status not in FINISHED and not read_only,
         }
 
     def _last_replies(self, tickets: list[Ticket]) -> dict[uuid.UUID, LastReply]:
@@ -863,6 +944,7 @@ class TicketService:
         ticket = self.get(principal, ticket_id)
         if ticket.status in FINISHED:
             raise ConflictError("This ticket is closed.", code="INVALID_STATE")
+        self._refuse_if_forwarded_away(principal, ticket)
         safe = (filename or "attachment").replace("/", "_").replace("\\", "_")[:300]
         extension = "." + safe.rsplit(".", 1)[-1].lower() if "." in safe else ""
         if extension not in ATTACHMENT_TYPES:

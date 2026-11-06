@@ -1,8 +1,9 @@
 import uuid
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.core.inputs import Line, MaybeLine, MaybeText, Name, Text
 
 
 class VersionRead(BaseModel):
@@ -83,31 +84,31 @@ class PolicyDetail(PolicyRead):
 
 
 class PolicyUpdate(BaseModel):
-    name: str | None = Field(default=None, min_length=2, max_length=500)
+    name: Name | None = Field(default=None, min_length=2, max_length=500)
     category_id: uuid.UUID | None = None
-    issuer: str | None = Field(default=None, max_length=200)
-    issuing_department: str | None = Field(default=None, max_length=200)
-    owner: str | None = Field(default=None, max_length=200)
-    description: str | None = Field(default=None, max_length=5000)
+    issuer: MaybeLine = Field(default=None, max_length=200)
+    issuing_department: MaybeLine = Field(default=None, max_length=200)
+    owner: MaybeLine = Field(default=None, max_length=200)
+    description: MaybeText = Field(default=None, max_length=5000)
     status: str | None = Field(default=None, pattern="^(active|archived)$")
 
 
 class WithdrawRequest(BaseModel):
-    reason: str = Field(min_length=5, max_length=2000)
+    reason: Text = Field(min_length=5, max_length=2000)
 
 
 class PolicyCreate(BaseModel):
     """A policy created by hand; its documents (versions) are uploaded into it afterwards."""
 
-    name: str = Field(min_length=2, max_length=500)
+    name: Name = Field(min_length=2, max_length=500)
     category_id: uuid.UUID
     # global: the whole organisation (organisation admins only); branch: one branch.
     scope: Literal["global", "branch"] = "branch"
     branch_id: uuid.UUID | None = None  # branch scope; a Branch Manager's own branch when omitted
     department_id: uuid.UUID | None = None
-    description: str | None = Field(default=None, max_length=5000)
-    policy_number: str | None = Field(default=None, max_length=100)
-    owner: str | None = Field(default=None, max_length=200)
+    description: MaybeText = Field(default=None, max_length=5000)
+    policy_number: MaybeLine = Field(default=None, max_length=100)
+    owner: MaybeLine = Field(default=None, max_length=200)
 
 
 class VersionOrder(BaseModel):
@@ -138,8 +139,8 @@ class DocumentMove(BaseModel):
 
 
 class RelationshipCreate(BaseModel):
-    relation_type: str
+    relation_type: str = Field(max_length=50)
     target_policy_id: uuid.UUID
     target_version_id: uuid.UUID | None = None
-    clauses: list[str] = Field(default_factory=list, max_length=100)
-    evidence: str | None = Field(default=None, max_length=2000)
+    clauses: list[Annotated[Line, Field(max_length=200)]] = Field(default_factory=list, max_length=100)
+    evidence: MaybeText = Field(default=None, max_length=2000)

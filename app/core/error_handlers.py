@@ -34,7 +34,21 @@ async def handle_validation_error(request: Request, exc: RequestValidationError)
     # Say which field failed, so a 422 in the server log can be diagnosed (messages hold no submitted values).
     logger.warning("Request validation failed on %s %s: %s", request.method, request.url.path,
                    "; ".join(f"{d['field']}: {d['message']}" for d in details))
-    return error_response(422, "VALIDATION_ERROR", "Request validation failed.", details)
+    return error_response(422, "VALIDATION_ERROR", _readable(exc.errors()), details)
+
+
+def _readable(errors) -> str:
+    """The message a person sees: each problem with its field ('New password must include a digit (0-9).')."""
+    lines = []
+    for err in errors[:3]:
+        names = [str(part) for part in err["loc"] if isinstance(part, str) and part not in ("body", "query", "path")]
+        label = (names[-1] if names else "Input").replace("_", " ").capitalize()
+        message = str(err["msg"]).removeprefix("Value error, ").rstrip(".")
+        joined = f"{label} {message}" if message.startswith(("must ", "may ")) else f"{label}: {message}"
+        lines.append(joined + ".")
+    if len(errors) > 3:
+        lines.append(f"And {len(errors) - 3} more.")
+    return " ".join(lines) or "Request validation failed."
 
 
 async def handle_http_error(request: Request, exc: StarletteHTTPException):

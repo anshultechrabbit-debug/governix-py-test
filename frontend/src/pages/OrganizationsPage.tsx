@@ -15,6 +15,7 @@ import {
 // import { AIUsageCard } from "../components/AIUsageCard";
 import { formatDateTime } from "../lib/format";
 import { useToast } from "../store/hooks";
+import { PasswordRules, passwordOk } from "../components/PasswordRules";
 
 /** The port range, the ports in use and the fonts, while a form is open. */
 function useOrganizationOptions(enabled: boolean) {
@@ -141,7 +142,7 @@ function CreateOrganizationModal({ open, onClose }: { open: boolean; onClose: ()
 
   const adminGiven = Boolean(admin.email || admin.full_name || admin.password);
   const invalid = !orgFormReady(form, options)
-    || (adminGiven && (!admin.email || admin.full_name.trim().length < 2 || admin.password.length < 12));
+    || (adminGiven && (!admin.email || admin.full_name.trim().length < 2 || !passwordOk(admin.password, { email: admin.email, name: admin.full_name })));
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -191,15 +192,9 @@ function CreateOrganizationModal({ open, onClose }: { open: boolean; onClose: ()
             <Field label="Full name"><Input value={admin.full_name} onChange={(e) => setAdmin({ ...admin, full_name: e.target.value })} /></Field>
             <Field label="Email"><Input type="email" value={admin.email} onChange={(e) => setAdmin({ ...admin, email: e.target.value })} placeholder="admin@abcbank.com" /></Field>
           </div>
-          <Field
-            label="Temporary password"
-            hint={
-              admin.password && admin.password.length < 12
-                ? `At least 12 characters required (${admin.password.length}/12 entered)`
-                : "At least 12 characters. Share it securely; the admin can change it after signing in."
-            }
-          >
+          <Field label="Temporary password" hint="Share it securely; the admin can change it after signing in.">
             <PasswordInput value={admin.password} onChange={(e) => setAdmin({ ...admin, password: e.target.value })} autoComplete="new-password" />
+            <PasswordRules password={admin.password} email={admin.email} name={admin.full_name} />
           </Field>
         </section>
         {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-sm text-bad-600" role="alert">{error}</p>}

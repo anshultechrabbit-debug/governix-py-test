@@ -52,9 +52,9 @@ from app.modules.rag.calculate import (
 )
 from app.modules.rag.injection import strip_instructions
 from app.modules.rag.evidence import (
-    EvidenceItem, EvidenceSet, applies_to_reader, asks_to_confirm, asks_yes_no, build_evidence, coverage_of,
-    describes_readers_case,
-    is_document_question, key_terms,
+    EvidenceItem, EvidenceSet, applies_to_reader, asks_for_submitted_documents, asks_to_confirm, asks_yes_no,
+    build_evidence, coverage_of, describes_readers_case, documents_held,
+    is_document_question, key_terms, names_documents,
     situation_figures, situation_terms,
 )
 from app.infrastructure.ai.llm.local import LocalLLM
@@ -72,7 +72,7 @@ from app.modules.rag.select import (
 )
 from app.modules.rag.query_rewrite import (
     CLARIFY_PROMPT, HISTORY_TURNS, Rewrite, depends_on_history, from_form, question_lines, restated_questions,
-    standalone_question,
+    standalone_question, without_opener,
 )
 from app.modules.rag.query_rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
 from app.modules.rag.schema import AnswerResponse, AskRequest, Claim, NoAnswer, Source
@@ -233,7 +233,12 @@ HISTORY_KEY_CHARS = 300
 #          only frame the ask ("something", "so far") are not required in the evidence (never a word no document
 #          uses); "which documents do you have?" lists the reader's policies (DOCUMENT_LIST); a question naming
 #          only a policy ("tell me about the mortgage policy") is answered as an overview of its version in force
-ANSWER_CACHE_VERSION = "v73"
+#   v74    words that name nothing are never the subject, with or without a model: interjections and informal
+#          function words ("okay", "hmm", "kinda", "pls") are closed-class, an opening "okay then / so / now" is
+#          set aside; "which documents are assign(ed) to me / do you have / can I access" lists the reader's
+#          policies whatever the verb (evidence.documents_held); "what is the policy?" describes the reader's one
+#          policy or asks which; "what documents do I need?" is searched
+ANSWER_CACHE_VERSION = "v74"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -572,7 +577,7 @@ class RAGService:
         # Each question as asked -> the words the rewrite judged to frame it ("something", "so far"; see _framing),
         # and what kind of message it is ("documents": which documents are there).
         self._framing_words: dict[str, frozenset[str]] = {}
-        self._kinds: dict[str, str] = {}
+        self._kinds: dict[str, str | None] = {}
         # Instructions to the assistant found in the question and set aside (rag/injection.py).
         self._ignored_instructions: list[str] = []
         # What the reasoning check found wrong in the last attempt, for its one retry (_check_reasoning).
@@ -794,6 +799,9 @@ class RAGService:
         if (unlabelled := _QUESTION_LABEL.sub("", request.question, count=1)) != request.question and has_words(unlabelled):
             # "Q. For a loan ...", "Q63: What is ...": a test sheet's numbering, not part of the question.
             request = request.model_copy(update={"question": unlabelled})
+        if (bare := without_opener(request.question)) != request.question:
+            # "okay then tell me about X", "so what about v2?": the question starts after the interjections.
+            request = request.model_copy(update={"question": bare})
         if (plain := from_form(request.question)) != request.question:
             # "Age: 35 / Income: ₹60,000 / Version: 6 / Question: ...": the reader's case and the question as
             # one message ("My age is 35 and ... Do I ... in Version 6?").
@@ -852,13 +860,20 @@ class RAGService:
                 # "What documents have you consumed so far?", "Which policies can I ask about?": what the reader
                 # can see, from the catalogue. No passage is read and nothing is said about what they contain.
                 raise self._document_list(principal)
-            if is_greeting(request.question) or not self._has_subject(principal, request.question, plan):
+            # "What is the policy?", "What is the documents", "What kind of the policy?": the documents themselves,
+            # named by a common noun, and nothing else asked. The reader's one policy (or the one chosen) is
+            # described as a whole; with several, they are listed to choose from.
+            generic = self._names_documents_only(principal, request.question, plan, mentions)
+            only = (list(request.policy_ids) or self._only_policy(principal)) if generic else []
+            if generic and not only:
+                raise self._document_list(principal, choose=True)
+            if not generic and (is_greeting(request.question) or not self._has_subject(principal, request.question, plan)):
                 # "hi", "thanks", "can you explain in short?": nothing to search for. Searching
                 # anyway lets any passage pass the term checks, which have nothing to check.
                 raise _NoAnswer("GREETING" if is_greeting(request.question) else "NO_SUBJECT", suggestions=[])
             referenced = request.policy_ids or self.retriever.referenced_policies(principal, request.question)
             self._subjects[request.question] = without_references(request.question, mentions)
-            self._named_policies[request.question] = list(dict.fromkeys(m.policy_id for m in mentions))
+            self._named_policies[request.question] = list(dict.fromkeys(m.policy_id for m in mentions)) or only
             filters = self._filters(principal, plan, request, referenced, named)
             if self._asks_overview(principal, request.question, plan):
                 # "Tell me about the mortgage policy": the policy as a whole, from its own opening and contents.
@@ -1553,19 +1568,51 @@ class RAGService:
         return not self._subject_terms(principal, question)
 
     def _asks_for_document_list(self, principal: Principal, question: str, mentions: list) -> bool:
-        """The rewrite read the message as asking which documents there are ("What documents have you consumed so
-        far?"), and it names no policy and nothing else the documents use. "What documents are needed for a home
-        loan?" names a subject ("home", "loan") and is searched as usual. A listing states nothing about what the
-        documents say, so a word no document uses may be framing here."""
-        if self._kinds.get(question) != "documents" or mentions:
+        """The message asks which documents there are ("What documents have you consumed so far?", "Which is the
+        documents assign on me?"), and it names no policy and nothing else the documents use. "What documents are
+        needed for a home loan?" names a subject ("home", "loan") and is searched as usual. A listing states nothing
+        about what the documents say, so a word no document uses may be framing here.
+
+        The rewrite's verdict decides when a model read the message. Either way the words tying the documents to
+        the reader or the assistant ("assigned to me", "do you have", "can I access", however spelt) are the
+        relation, not a subject (evidence.documents_held): the model's framing words never include an action, and
+        "assign" is a word documents use. Without a model (local stand-in, outage) that grammar alone decides."""
+        if mentions:
+            return False
+        kind = self._kinds.get(question)
+        held = documents_held(question)
+        if kind == "question" or (kind is None and held is None):
             return False
         framing = self._framing_words.get(question, frozenset())
-        terms = sorted({t for t in key_terms(question) if t not in framing})
+        terms = sorted({t for t in key_terms(held if held is not None else question) if t not in framing})
         return not terms or len(self.retriever.unseen_terms(principal, terms)) == len(terms)
 
-    def _document_list(self, principal: Principal) -> _NoAnswer:
+    def _names_documents_only(self, principal: Principal, question: str, plan: QueryPlan, mentions: list) -> bool:
+        """The question names the documents only by a common noun and asks nothing else of them ("What is the
+        policy?", "What is the documents", "What kind of the policy?", "Explain this document"). Not a question
+        about a version ("the latest version of the policy"), a clause, the reader's case, or the documents a
+        customer must hand in ("What documents do I need?"), and not one naming any other subject."""
+        if mentions or not names_documents(question) or asks_for_submitted_documents(question):
+            return False
+        if plan.query_class is not QueryClass.CURRENT or plan.version_ids or plan.diff or plan.since or plan.as_of_dates:
+            return False
+        if re.search(r"\b(?:versions?|editions?|amendments?|revisions?)\b", question, re.I):
+            return False
+        if (requested_clauses(question) or requested_codes(question) or acronym_in_question(question)
+                or applies_to_reader(question) or situation_figures(question)):
+            return False
+        framing = self._framing(principal, question)
+        return not [t for t in key_terms(question) if t not in framing]
+
+    def _only_policy(self, principal: Principal) -> list[uuid.UUID]:
+        """The reader's one policy, when they can see exactly one (same ACL as every search); else nothing."""
+        policies = list(dict.fromkeys(version.policy_id for version, _name in self._searchable_versions(principal, [])))
+        return policies if len(policies) == 1 else []
+
+    def _document_list(self, principal: Principal, *, choose: bool = False) -> _NoAnswer:
         """The policies the reader can ask about, each with its version in force: the same ACL as every search, so
-        a User sees only the policies assigned to them."""
+        a User sees only the policies assigned to them. choose: the reader asked about "the policy" and there are
+        several, so the list asks which one."""
         today = datetime.now(UTC).date()
         shown: dict[uuid.UUID, tuple[str, PolicyVersion]] = {}
         for version, name in self._searchable_versions(principal, []):  # oldest first
@@ -1587,6 +1634,9 @@ class RAGService:
         whose = "assigned to you" if principal.reads_by_assignment else "you can access"
         count = f"{len(rows)} {'policy' if len(rows) == 1 else 'policies'}"
         message = f"I answer from the {count} {whose}, and cite the passage for every point."
+        if choose and len(rows) > 1:
+            message = (f"Which policy do you mean? There are {count} {whose}. Ask about one by name, for example "
+                       f"“Tell me about the {rows[0][0]}”.")
         if len(rows) > MAX_LISTED_POLICIES:
             message += f" The first {MAX_LISTED_POLICIES}, by name:"
         return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=listed)
@@ -2559,6 +2609,9 @@ class RAGService:
             or plan.query_class is not QueryClass.CURRENT or plan.version_ids
             # "I am 25 years old, can I apply?": the reader's own figures are what to look up.
             or situation_figures(question)
+            # "What documents do I need?": the documents a rule asks for are the subject ("need" frames most
+            # questions, and "documents" names the corpus in most others).
+            or asks_for_submitted_documents(question)
         )
 
     # --- audit ---------------------------------------------------------------------
