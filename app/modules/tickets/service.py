@@ -85,9 +85,10 @@ HANDLER_TRANSITIONS: dict[str, set[str]] = {
     TicketStatus.WAITING_FOR_TEAM: {TicketStatus.IN_PROGRESS, TicketStatus.RESOLVED},
     TicketStatus.RESOLVED: {TicketStatus.IN_PROGRESS},
 }
-# What the creator may do: accept a resolution, or reopen.
+# What the creator may do: only reopen, once the team has resolved or closed it. A resolved ticket closes by
+# itself after SUPPORT_AUTO_CLOSE_DAYS (sla.sweep). The creator never handles their own ticket (can_handle).
 CREATOR_TRANSITIONS: dict[str, set[str]] = {
-    TicketStatus.RESOLVED: {TicketStatus.CLOSED, TicketStatus.OPEN},
+    TicketStatus.RESOLVED: {TicketStatus.OPEN},
     TicketStatus.CLOSED: {TicketStatus.OPEN},
 }
 FINISHED = frozenset({TicketStatus.CLOSED, TicketStatus.CANCELLED})
@@ -367,6 +368,9 @@ class TicketService:
         if user_id is not None:
             if not taking and user_id not in self._queue_member_ids(ticket):
                 raise ValidationError("That person is not on duty in this ticket's queue.", code="NOT_IN_QUEUE")
+            if user_id == ticket.created_by_id:
+                raise ValidationError("A ticket cannot be assigned to the person who raised it.",
+                                      code="ASSIGNEE_IS_CREATOR")
             user = self.session.get(User, user_id)
             if user is None or not user.is_active:
                 raise ValidationError("That person is not on duty in this ticket's queue.", code="NOT_IN_QUEUE")

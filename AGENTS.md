@@ -122,6 +122,10 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   to the person's queue are never read-only. The new team sees `forwarded` (latest forward: who, role, from
   queue, reason) as a banner on the ticket and in the list; the new assignee's notification says "Forwarded to
   you" with who, from where and why.
+- **The creator never handles their own ticket (2026-11-06)**, even as a member or manager of its queue
+  (`queues.can_handle`, `handling_clause`; assignment already skipped them; a manager assigning it to them gets
+  `ASSIGNEE_IS_CREATOR`). The creator's only status change is Reopen, on a resolved or closed ticket
+  (`CREATOR_TRANSITIONS`); "Accept and close" is gone, resolved tickets auto-close (`SUPPORT_AUTO_CLOSE_DAYS`).
 - **Timeline** is `ticket_messages` with `kind` reply/note/status/forward/assign. Internal notes carry the level
   they were written at and are shown only to that level's staff side (`reads_notes_of`), never the creator.
 - **SLA** (`sla.py`, settings `SUPPORT_SLA_HOURS` etc.): due times from priority at confirmation; the

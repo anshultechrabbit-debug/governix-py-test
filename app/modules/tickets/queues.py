@@ -105,8 +105,12 @@ def manages_queue(principal: Principal, duty: Duty, level: str, organization_id:
 
 
 def can_handle(principal: Principal, duty: Duty, ticket: Ticket) -> bool:
-    """Works or manages the ticket's current queue (or holds it). Reply as staff, change status, forward."""
+    """Works or manages the ticket's current queue (or holds it). Reply as staff, change status, forward.
+    Never the person who raised it, even when they work that queue: on their own ticket they are the requester
+    (reply, withdraw, reopen), the same rule as assignment.candidates."""
     if ticket.status == TicketStatus.AWAITING_CONFIRMATION:
+        return False
+    if ticket.created_by_id is not None and ticket.created_by_id == principal.user_id:
         return False
     if ticket.assigned_to_id == principal.user_id:
         return True
@@ -153,7 +157,9 @@ def handling_clause(principal: Principal, duty: Duty) -> ColumnElement[bool]:
     elif principal.role is Role.BRANCH_MANAGER:
         clauses.append(and_(Ticket.organization_id == principal.organization_id,
                             Ticket.branch_id == principal.branch_id, Ticket.level == TicketLevel.BRANCH))
-    return and_(Ticket.status != TicketStatus.AWAITING_CONFIRMATION, or_(*clauses))
+    # Never their own tickets (can_handle): those are in "mine".
+    return and_(Ticket.status != TicketStatus.AWAITING_CONFIRMATION, or_(*clauses),
+                or_(Ticket.created_by_id.is_(None), Ticket.created_by_id != principal.user_id))
 
 
 def forwarded_by_clause(principal: Principal) -> ColumnElement[bool]:

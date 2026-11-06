@@ -201,8 +201,6 @@ export function TicketPage() {
 
           {mine && !staffSide && (a.statuses.length > 0 || a.cancel || a.escalate) && (
             <Card className="space-y-2 p-4">
-              {a.statuses.includes("closed") && <Button className="w-full" loading={busy}
-                onClick={() => run(() => api.post(`/support/tickets/${id}/status`, { status: "closed" }), "Thanks. Ticket closed.")}>Accept and close</Button>}
               {a.statuses.includes("open") && <Button variant="secondary" className="w-full" loading={busy}
                 onClick={() => run(() => api.post(`/support/tickets/${id}/status`, { status: "open" }), "Ticket reopened.")}>Reopen</Button>}
               {a.escalate && <Button variant="secondary" className="w-full" onClick={() => setForwarding("escalate")}>

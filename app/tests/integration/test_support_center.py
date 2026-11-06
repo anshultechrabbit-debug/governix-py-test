@@ -400,25 +400,50 @@ def test_internal_notes_stay_with_the_staff_side(client, db, tenant):
     assert "Check CCTV first." in [e["body"] for e in seen_by_admin["timeline"] if e["kind"] == "note"]
 
 
+def test_staff_never_handle_a_ticket_they_raised(client, db, tenant):
+    """A Branch Support member who raises a ticket in their own queue is its requester only: no status menu,
+    priority, take or forward, not in their Queue box, and it cannot be assigned to them."""
+    asha = staff_user(db, tenant, name="Asha")
+    manager = login(client, tenant.manager_a)
+    add_staff(manager, level="branch", user_id=str(asha.id))
+    add_staff(manager, level="branch", user_id=str(staff_user(db, tenant, name="Ravi").id))
+    me = login(client, asha)
+    ticket = confirm(me, raise_ticket(me))
+    url = f"/support/tickets/{ticket['id']}"
+    assert ticket["can_handle"] is False and ticket["assigned_to_name"] == "Ravi"
+    actions = ticket["actions"]
+    assert actions["statuses"] == [] and not actions["take"] and not actions["priority"] and actions["forward"] == []
+    assert actions["reply"] and not actions["note"]
+    assert me.post(f"{url}/status", json={"status": "in_progress"}).status_code == 403
+    assert me.post(f"{url}/assign", json={"user_id": str(asha.id)}).status_code == 403
+    assert me.post(f"{url}/priority", json={"priority": "urgent"}).status_code == 403
+    assert ticket["id"] not in [t["id"] for t in me.get("/support/tickets?box=queue").json()["data"]["items"]]
+    refused = manager.post(f"{url}/assign", json={"user_id": str(asha.id)})
+    assert refused.status_code == 422 and refused.json()["error"]["reason"] == "ASSIGNEE_IS_CREATOR"
+    # Once the team resolves it, the only thing the requester can do is reopen.
+    manager.post(f"{url}/status", json={"status": "resolved", "note": "Fixed."})
+    assert me.get(url).json()["data"]["actions"]["statuses"] == ["open"]
+
+
 def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant):
     manager = login(client, tenant.manager_a)
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
     url = f"/support/tickets/{ticket['id']}"
     assert user.post(f"{url}/status", json={"status": "in_progress"}).status_code == 403
-    assert manager.post(f"{url}/status", json={"status": "closed"}).status_code == 403  # the creator accepts
+    assert manager.post(f"{url}/status", json={"status": "closed"}).status_code == 403  # closes by itself (sweep)
     assert manager.post(f"{url}/status", json={"status": "awaiting_confirmation"}).status_code == 403
     assert manager.post(f"{url}/status", json={"status": "resolved"}).json()["error"]["reason"] == "RESOLUTION_NOTE_REQUIRED"
     resolved = manager.post(f"{url}/status", json={"status": "resolved", "note": "Second counter opened."}).json()["data"]
     assert resolved["status"] == "resolved" and resolved["resolution_note"] == "Second counter opened."
     reopened = user.post(f"{url}/status", json={"status": "open"}).json()["data"]
     assert reopened["status"] == "open" and reopened["reopen_count"] == 1 and reopened["resolution_note"] is None
-    manager.post(f"{url}/status", json={"status": "resolved", "note": "Done for real."})
-    closed = user.post(f"{url}/status", json={"status": "closed"}).json()["data"]
-    assert closed["status"] == "closed"
-    assert user.post(f"{url}/messages", json={"body": "one more"}).status_code == 409
-    statuses = [e["status_change"] for e in closed["timeline"] if e["status_change"]]
-    assert statuses[-3:] == ["open", "resolved", "closed"]
+    resolved = manager.post(f"{url}/status", json={"status": "resolved", "note": "Done for real."}).json()["data"]
+    assert resolved["actions"]["statuses"] == ["in_progress"]
+    assert user.get(url).json()["data"]["actions"]["statuses"] == ["open"]  # the creator only reopens
+    assert user.post(f"{url}/status", json={"status": "closed"}).status_code == 403
+    statuses = [e["status_change"] for e in resolved["timeline"] if e["status_change"]]
+    assert statuses[-2:] == ["open", "resolved"]
 
     other = confirm(user, raise_ticket(user))
     assert manager.post(f"/support/tickets/{other['id']}/cancel", json={}).json()["error"]["reason"] == "REASON_REQUIRED"
