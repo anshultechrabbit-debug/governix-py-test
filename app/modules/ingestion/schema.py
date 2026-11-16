@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Annotated, Any
 
 from pydantic import BaseModel, Field
-from app.core.inputs import Line, MaybeLine, MaybeText, Name
+from app.core.inputs import AtMost, Line, MaybeLine, MaybeText, Name
 
 
 class AnalysisRead(BaseModel):
@@ -37,24 +37,24 @@ class RelationshipInput(BaseModel):
     target_policy_id: uuid.UUID
     target_version_id: uuid.UUID | None = None
     clauses: list[Annotated[Line, Field(max_length=200)]] = Field(default_factory=list, max_length=100)
-    evidence: MaybeText = Field(default=None, max_length=2000)
+    evidence: Annotated[MaybeText, AtMost(2000)] = None
 
 
 class PolicyInput(BaseModel):
     name: Name = Field(min_length=2, max_length=500)
     category_id: uuid.UUID
-    policy_number: MaybeLine = Field(default=None, max_length=100)
-    document_number: MaybeLine = Field(default=None, max_length=100)
-    issuer: MaybeLine = Field(default=None, max_length=200)
-    issuing_department: MaybeLine = Field(default=None, max_length=200)
-    owner: MaybeLine = Field(default=None, max_length=200)
-    description: MaybeText = Field(default=None, max_length=5000)
+    policy_number: Annotated[MaybeLine, AtMost(100)] = None
+    document_number: Annotated[MaybeLine, AtMost(100)] = None
+    issuer: Annotated[MaybeLine, AtMost(200)] = None
+    issuing_department: Annotated[MaybeLine, AtMost(200)] = None
+    owner: Annotated[MaybeLine, AtMost(200)] = None
+    description: Annotated[MaybeText, AtMost(5000)] = None
     branch_id: uuid.UUID | None = None
     department_id: uuid.UUID | None = None
 
 
 class VersionInput(BaseModel):
-    version_label: MaybeLine = Field(default=None, max_length=50)
+    version_label: Annotated[MaybeLine, AtMost(50)] = None
     revision_number: int | None = Field(default=None, ge=0, le=100_000)
     # Optional. When omitted: the date the document states, else the upload date.
     effective_from: date | None = None

@@ -1,10 +1,12 @@
 """The shared input rules (app/core/inputs.py)."""
 
+from typing import Annotated
+
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.inputs import (
-    Line, MaybeText, Name, NewPassword, PersonName, Phone, Tag, Text, Website, password_problems,
+    AtMost, Line, MaybeText, Name, NewPassword, PersonName, Phone, Tag, Text, Website, password_problems,
 )
 from app.core.security import generate_temporary_password
 
@@ -14,7 +16,7 @@ class Form(BaseModel):
     name: Name | None = Field(default=None, min_length=2, max_length=200)
     line: Line | None = None
     text: Text | None = Field(default=None, min_length=3, max_length=50)
-    note: MaybeText = Field(default=None, max_length=50)
+    note: Annotated[MaybeText, AtMost(50)] = None
     phone: Phone = None
     website: Website = None
     tags: list[Tag] = []
@@ -65,3 +67,15 @@ def test_phones_websites_and_tags():
     assert Form(website="https://www.bank.com").website == "https://www.bank.com"
     assert "http" in message(website="www.bank.com")
     assert "commas" in message(tags=["sql, python"])
+
+
+def test_optional_boxes_left_empty_are_not_given():
+    """A blank or null optional value is None, never measured: max_length on None was a 500 (POST /organizations
+    with an empty address, phone or website)."""
+    for empty in ("", "   ", None):
+        form = Form(note=empty, phone=empty, website=empty)
+        assert (form.note, form.phone, form.website) == (None, None, None)
+    assert "at most 50 characters" in message(note="x" * 51)
+    assert Form(note="  " + "x" * 50 + "  ").note == "x" * 50  # measured after trimming
+    assert "at most 30 characters" in message(phone="1" * 31)
+    assert Form.model_json_schema()["properties"]["note"]["maxLength"] == 50

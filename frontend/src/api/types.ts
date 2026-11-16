@@ -743,7 +743,6 @@ export interface TicketActions {
   forward: Destination[];
   escalate: boolean;
   escalate_to: string | null;
-  take: boolean;
   assign: boolean;
   priority: boolean;
   attach: boolean;
@@ -807,7 +806,6 @@ export interface SupportStaff {
   created_at: string;
 }
 export interface SupportStaffCreated extends SupportStaff { temporary_password: string | null }
-export interface StaffCandidate { user_id: UUID; full_name: string; email: string; role: Me["role"]; branch_name: string | null }
 
 /* ---------- Uploads ---------- */
 

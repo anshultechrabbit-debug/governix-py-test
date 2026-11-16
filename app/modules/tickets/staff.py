@@ -5,7 +5,9 @@
     Org Admin        Head Office staff of their bank, and the staff of any of its branches
     Branch Manager   the staff of their own branch
 
-A profile puts an existing account on duty; bank staff keep their normal role and work. Deactivating
+Support staff are always their own support_agent accounts, created here: Governix's (no organization), or a
+bank's, in the bank (Head Office) or one of its branches. Existing users are never put on duty. Removing a
+bank's staff member also closes their account. Deactivating
 or marking someone away never moves their tickets: a manager reassigns them (reassign_open), and each
 move is recorded and notified.
 """
@@ -16,13 +18,14 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.database import translate_unique_violation
 from app.core.exceptions import ConflictError, NotFoundError, PermissionDeniedError, ValidationError
 from app.core.security import generate_temporary_password, hash_password
 from app.modules.audit.service import record_event
+from app.modules.auth.model import RefreshToken
 from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.branches.model import Branch
 from app.modules.organizations.model import Organization
@@ -162,59 +165,19 @@ class StaffService:
         return [StaffView(staff, user, branch, org, counts.get(user.id, 0), serves.get(staff.id, []))
                 for staff, user, branch, org in rows]
 
-    def candidates(self, principal: Principal, *, level: str, branch_id: uuid.UUID | None,
-                   search: str | None, limit: int = 20) -> list[tuple[User, str | None]]:
-        """Accounts that may be put on duty at that level (and are not on duty already)."""
-        self._require(principal)
-        organization_id = None if level == TicketLevel.PLATFORM else principal.organization_id
-        branch_id = self._branch(principal, level, branch_id)
-        if not self._may_manage(principal, level, organization_id, branch_id):
-            raise PermissionDeniedError("You cannot manage support staff at that level.")
-        query = (
-            select(User, Branch.name).outerjoin(Branch, Branch.id == User.branch_id)
-            .where(User.is_active, User.deleted_at.is_(None),
-                   ~select(SupportStaff.id).where(SupportStaff.user_id == User.id).exists())
-        )
-        if level == TicketLevel.PLATFORM:
-            query = query.where(User.role.in_([Role.SUPPORT_AGENT, Role.MASTER_ADMIN]))
-        elif level == TicketLevel.ORGANIZATION:
-            query = query.where(User.organization_id == organization_id,
-                                User.role.in_([Role.ORG_ADMIN, Role.BRANCH_MANAGER, Role.DEPARTMENT_USER]))
-        else:
-            query = query.where(User.organization_id == organization_id, User.branch_id == branch_id,
-                                User.role.in_([Role.BRANCH_MANAGER, Role.DEPARTMENT_USER]))
-        if search and search.strip():
-            term = f"%{search.strip().lower()}%"
-            query = query.where(or_(func.lower(User.full_name).like(term), func.lower(User.email).like(term)))
-        return list(self.session.execute(query.order_by(User.full_name).limit(limit)).all())
-
     # --- write ---------------------------------------------------------------------------------------------
 
-    def create(self, principal: Principal, *, level: str, user_id: uuid.UUID | None, new_account: dict | None,
-               branch_id: uuid.UUID | None, staff_role: str, skills: list[str], capacity: int,
-               availability: str, serves: list[uuid.UUID] | None) -> tuple[SupportStaff, str | None]:
-        """Put an account on duty (or, for the platform, create a support agent account). Returns the profile
-        and, for a new account, its temporary password (shown once)."""
+    def create(self, principal: Principal, *, level: str, new_account: dict, branch_id: uuid.UUID | None,
+               staff_role: str, skills: list[str], capacity: int, availability: str,
+               serves: list[uuid.UUID] | None) -> tuple[SupportStaff, str]:
+        """Create a support staff account and put it on duty: support staff are always their own accounts, never
+        existing users. Returns the profile and the account's temporary password (shown once)."""
         self._require(principal)
         organization_id = None if level == TicketLevel.PLATFORM else principal.organization_id
         branch_id = self._branch(principal, level, branch_id)
         if not self._may_manage(principal, level, organization_id, branch_id):
             raise PermissionDeniedError("You cannot manage support staff at that level.")
-        password = None
-        if new_account is not None:
-            if level != TicketLevel.PLATFORM:
-                raise ValidationError("Add someone who already has an account in your organization.")
-            user, password = self._new_agent(principal, new_account)
-        else:
-            if user_id is None:
-                raise ValidationError("Choose a person.")
-            eligible = {u.id for u, _ in self.candidates(principal, level=level, branch_id=branch_id, search=None,
-                                                        limit=10_000)}
-            if user_id not in eligible:
-                if self.session.scalar(select(SupportStaff.id).where(SupportStaff.user_id == user_id)):
-                    raise ConflictError("That person is already on support duty.", code="ALREADY_STAFF")
-                raise ValidationError("That person cannot be added at this level.", code="NOT_ELIGIBLE")
-            user = self.session.get(User, user_id)
+        user, password = self._new_agent(principal, new_account, organization_id=organization_id, branch_id=branch_id)
         staff = SupportStaff(
             user_id=user.id, level=level, organization_id=organization_id, branch_id=branch_id,
             staff_role=staff_role, skills=clean_skills(skills), capacity=capacity, availability=availability,
@@ -233,17 +196,23 @@ class StaffService:
             self.session.commit()
         return staff, password
 
-    def _new_agent(self, principal: Principal, details: dict) -> tuple[User, str]:
+    def _new_agent(self, principal: Principal, details: dict, *, organization_id: uuid.UUID | None,
+                   branch_id: uuid.UUID | None) -> tuple[User, str]:
+        """A support agent account: Governix's (no organization), or a bank's, in its Head Office or a branch.
+        It only works tickets (the `support` permission): no policies, documents or AI Assistant."""
         email = str(details["email"]).lower()
         if UserRepository(self.session).email_exists(email):
             raise ValidationError(EMAIL_TAKEN, code="EMAIL_TAKEN")
         password = generate_temporary_password()
         user = User(email=email, full_name=details["full_name"], phone=details.get("phone"),
-                    password_hash=hash_password(password), role=Role.SUPPORT_AGENT)
+                    password_hash=hash_password(password), role=Role.SUPPORT_AGENT,
+                    organization_id=organization_id, branch_id=branch_id)
         self.session.add(user)
         self.session.flush()
-        record_event(self.session, "user.created", actor=principal, organization_id=None, resource_type="user",
-                     resource_id=user.id, details={"email": user.email, "role": Role.SUPPORT_AGENT})
+        record_event(self.session, "user.created", actor=principal, organization_id=organization_id,
+                     resource_type="user", resource_id=user.id,
+                     details={"email": user.email, "role": Role.SUPPORT_AGENT,
+                              "branch_id": str(branch_id) if branch_id else None})
         return user, password
 
     def _set_serves(self, staff: SupportStaff, organization_ids: list[uuid.UUID]) -> None:
@@ -293,13 +262,25 @@ class StaffService:
         return staff
 
     def remove(self, principal: Principal, staff_id: uuid.UUID) -> None:
-        """Take someone off duty for good. Their open tickets must be reassigned first."""
+        """Take someone off duty for good. Their open tickets must be reassigned first. A bank's support agent
+        account exists only for this duty, so it is closed too (soft-deleted, signed out everywhere)."""
         staff = self._get(principal, staff_id)
         if open_counts(self.session, [staff.user_id]).get(staff.user_id):
             raise ConflictError("Reassign their open tickets first, or deactivate them instead.", code="HAS_OPEN_TICKETS")
         record_event(self.session, "support_staff.removed", actor=principal, organization_id=staff.organization_id,
                      resource_type="support_staff", resource_id=staff.id, details={"user_id": str(staff.user_id)})
+        user = self.session.get(User, staff.user_id)
         self.session.delete(staff)
+        if user is not None and user.role == Role.SUPPORT_AGENT and user.organization_id is not None \
+                and user.deleted_at is None:
+            user.deleted_at, user.deleted_by_id = datetime.now(UTC), principal.user_id
+            user.is_active = False
+            user.token_version += 1
+            self.session.execute(update(RefreshToken).where(RefreshToken.user_id == user.id,
+                                                            RefreshToken.revoked_at.is_(None))
+                                 .values(revoked_at=datetime.now(UTC)))
+            record_event(self.session, "user.deleted", actor=principal, organization_id=user.organization_id,
+                         resource_type="user", resource_id=user.id, details={"email": user.email, "role": user.role})
         self.session.commit()
 
     def profile_of(self, principal: Principal, staff_id: uuid.UUID) -> SupportStaff:

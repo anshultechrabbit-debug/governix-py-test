@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.config import get_settings
 from app.modules.organizations.model import OrganizationStatus
-from app.core.inputs import MaybeText, Name, NewPassword, PersonName, Phone, Website
+from app.core.inputs import AtMost, MaybeText, Name, NewPassword, PersonName, Phone, Website
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$"
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
@@ -24,7 +24,7 @@ class Branding(BaseModel):
     contact_email: EmailStr | None = None
     contact_phone: Phone = None
     website: Website = None
-    address: MaybeText = Field(default=None, max_length=2000)
+    address: Annotated[MaybeText, AtMost(2000)] = None
     # Checked against TENANT_PORT_MIN..MAX and other organizations by the service.
     allowed_port: int | None = None
 

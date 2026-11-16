@@ -21,7 +21,8 @@ IF_NOT_THEM = ("If they didn't do this, deactivate the account or reset its pass
 
 
 def account_managers(session: Session, user: User) -> list[uuid.UUID]:
-    """Who can act on this account: its Branch Manager and Org Admins, for an Org Admin also the Master Admins."""
+    """Who can act on this account: its Branch Manager and Org Admins, for an Org Admin also the Master Admins.
+    A bank's support agent: its branch's Branch Manager and the Org Admins; Governix's: the Master Admins."""
     query = select(User.id).where(User.is_active, User.deleted_at.is_(None), User.id != user.id)
     role = Role(user.role)
     if role is Role.DEPARTMENT_USER:
@@ -29,6 +30,12 @@ def account_managers(session: Session, user: User) -> list[uuid.UUID]:
             and_(User.role == Role.BRANCH_MANAGER, User.branch_id == user.branch_id), User.role == Role.ORG_ADMIN))
     elif role is Role.BRANCH_MANAGER:
         query = query.where(User.organization_id == user.organization_id, User.role == Role.ORG_ADMIN)
+    elif role is Role.SUPPORT_AGENT and user.organization_id is not None:
+        # A bank's support staff: the managers who run its queue (the branch's Branch Manager) and the Org Admins.
+        managers = [User.role == Role.ORG_ADMIN]
+        if user.branch_id is not None:
+            managers.append(and_(User.role == Role.BRANCH_MANAGER, User.branch_id == user.branch_id))
+        query = query.where(User.organization_id == user.organization_id, or_(*managers))
     elif role is Role.ORG_ADMIN:
         query = query.where(or_(and_(User.organization_id == user.organization_id, User.role == Role.ORG_ADMIN),
                                 User.role == Role.MASTER_ADMIN))

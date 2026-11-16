@@ -3,7 +3,7 @@ from datetime import date, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from app.core.inputs import Line, MaybeLine, MaybeText, Name, Text
+from app.core.inputs import AtMost, Line, MaybeLine, MaybeText, Name, Text
 
 
 class VersionRead(BaseModel):
@@ -86,10 +86,10 @@ class PolicyDetail(PolicyRead):
 class PolicyUpdate(BaseModel):
     name: Name | None = Field(default=None, min_length=2, max_length=500)
     category_id: uuid.UUID | None = None
-    issuer: MaybeLine = Field(default=None, max_length=200)
-    issuing_department: MaybeLine = Field(default=None, max_length=200)
-    owner: MaybeLine = Field(default=None, max_length=200)
-    description: MaybeText = Field(default=None, max_length=5000)
+    issuer: Annotated[MaybeLine, AtMost(200)] = None
+    issuing_department: Annotated[MaybeLine, AtMost(200)] = None
+    owner: Annotated[MaybeLine, AtMost(200)] = None
+    description: Annotated[MaybeText, AtMost(5000)] = None
     status: str | None = Field(default=None, pattern="^(active|archived)$")
 
 
@@ -106,9 +106,9 @@ class PolicyCreate(BaseModel):
     scope: Literal["global", "branch"] = "branch"
     branch_id: uuid.UUID | None = None  # branch scope; a Branch Manager's own branch when omitted
     department_id: uuid.UUID | None = None
-    description: MaybeText = Field(default=None, max_length=5000)
-    policy_number: MaybeLine = Field(default=None, max_length=100)
-    owner: MaybeLine = Field(default=None, max_length=200)
+    description: Annotated[MaybeText, AtMost(5000)] = None
+    policy_number: Annotated[MaybeLine, AtMost(100)] = None
+    owner: Annotated[MaybeLine, AtMost(200)] = None
 
 
 class VersionOrder(BaseModel):
@@ -143,4 +143,4 @@ class RelationshipCreate(BaseModel):
     target_policy_id: uuid.UUID
     target_version_id: uuid.UUID | None = None
     clauses: list[Annotated[Line, Field(max_length=200)]] = Field(default_factory=list, max_length=100)
-    evidence: MaybeText = Field(default=None, max_length=2000)
+    evidence: Annotated[MaybeText, AtMost(2000)] = None

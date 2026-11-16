@@ -85,6 +85,11 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
 
 ## Input rules (2026-11-05, `app/core/inputs.py`)
 
+- **Optional types take their length as `AtMost(n)`** (2026-11-16): `address: Annotated[MaybeText, AtMost(2000)] = None`,
+  never `MaybeText = Field(max_length=2000)`. Pydantic applies a field's `max_length` after the blank-to-None cleaning,
+  to the whole value, and `len(None)` is a TypeError: a 500 instead of a 422 (it broke POST /organizations with an
+  empty address/phone/website). `Phone` and `Website` use it inside. Required types (`Name`, `Text`, ...) keep `Field`.
+
 - Every request schema uses the shared types, never a bare `str` for user text: `PersonName` (letters, spaces, ' - .),
   `Name` (one line, a letter or digit, no < >), `Line`, `Text` (multi-line), `Phone` (7-15 digits), `Website`
   (http/https), `Tag` (no commas), `NewPassword`, and `MaybeName/MaybeLine/MaybeText` (blank = not given). Values are
@@ -99,8 +104,15 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
 ## Support Center (`app/modules/tickets/`, `/support` API; replaced complaints and `/tickets` on 2026-11-03)
 
 - **Queues** (`queues.py`): Branch Support (per branch), Head Office Support (per bank), Technical Support
-  (Governix, platform). Members are `SupportStaff` profiles on existing accounts; platform staff are
-  `support_agent` accounts (no organization, only the `support` permission). Managers: Branch Manager, Org Admin
+  (Governix, platform). Members are `SupportStaff` profiles.
+- **Staff are their own accounts (2026-11-16)**: every new staff member is a `support_agent` account created on the
+  Support Staff page (`StaffService.create(new_account=)`, temporary password shown once), only the `support`
+  permission. Governix's have no organization; a bank's are in that bank (Head Office) or bank + branch (Branch
+  Support): `users.role_scope` allows it (migration `7d1e4a2c9b58`). `new_account` is required at every level:
+  nobody, platform included, puts an existing account on duty (no `user_id`, no `/support/staff/candidates`).
+  Removing a bank staff member also soft-deletes the account.
+  Its role, bank and branch never change through `/users` (`SUPPORT_STAFF_ACCOUNT`); its security alerts go to
+  the branch's Branch Manager and the Org Admins. Profiles put on ordinary users before this still work. Managers: Branch Manager, Org Admin
   (Head Office and oversight of every branch), Master Admin; a `lead` profile also manages its queue.
 - **Flow**: create -> `awaiting_confirmation` with an AI `routing` recommendation (`triage.py`, `TRIAGE_PROMPT`;
   local stand-in or outage -> `_from_text`: title (x2) and description words against each team's general description
@@ -115,6 +127,10 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   then user id; queue profile rows locked `FOR UPDATE` in id order. Nobody eligible -> unassigned and the
   managers are notified. Availability/deactivation never moves tickets; `/support/staff/{id}/reassign` does,
   recorded and notified.
+- **Never by hand for oneself (2026-11-16)**: there is no "take"; `/assign` to yourself is 403 `SELF_ASSIGN` (a
+  manager or lead may still move a ticket to someone else in the queue). Waiting (unassigned) tickets go out by
+  workload, oldest first, whenever room may appear (`TicketService.assign_waiting`): staff added, updated or back
+  to available, a ticket resolved, cancelled or forwarded away; and every SLA sweep (`assign_waiting_everywhere`).
 - **Forwarding (2026-11-06)**: whoever forwards or escalates a ticket keeps seeing it (`queues.forwarded_by_clause`, an
   EXISTS on their forward entry, no new column), **read-only** once it is in a queue they do not work
   (`TicketService._forwarded_away`; `read_only` on the ticket; reply/note/attach refused with 403

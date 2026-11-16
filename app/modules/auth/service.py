@@ -49,6 +49,8 @@ _WHO_RESTORES = {Role.DEPARTMENT_USER: "your Branch Manager", Role.BRANCH_MANAGE
 
 def account_suspended(user: User) -> AuthenticationError:
     who = _WHO_RESTORES.get(Role(user.role), "your administrator") if user.role in set(Role) else "your administrator"
+    if user.role == Role.SUPPORT_AGENT and user.organization_id is not None:  # a bank's support staff
+        who = "your Branch Manager" if user.branch_id is not None else "your Organization Admin"
     return AuthenticationError(f"Your account is suspended. Contact {who} to restore access.",
                                code="ACCOUNT_SUSPENDED")
 

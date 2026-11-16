@@ -198,8 +198,9 @@ class TicketAttachment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 class SupportStaff(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A person on support duty: which queue they work, their skills, capacity and availability.
 
-    A profile on an existing account (bank staff keep their normal work); Governix's technical staff
-    are support_agent accounts. The level fixes the team: platform -> technical, otherwise branch.
+    Each profile is on a support_agent account made for it: Governix's (platform) or a bank's (Head Office or
+    a branch, the account in that bank and branch). Profiles put on ordinary accounts before 2026-11-16 still
+    work. The level fixes the team: platform -> technical, otherwise branch.
     """
 
     __tablename__ = "support_staff"

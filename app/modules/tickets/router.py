@@ -31,7 +31,7 @@ from app.modules.tickets.service import TicketService, TicketView, TimelineEntry
 from app.modules.tickets.staff import CategoryService, StaffService, StaffView
 from app.workers.runtime import get_runtime
 from app.modules.auth.step_up import StepUp
-from app.core.inputs import MaybeText, Name, PersonName, Phone, Tag, Text
+from app.core.inputs import AtMost, MaybeText, Name, PersonName, Phone, Tag, Text
 
 router = APIRouter(prefix="/support", tags=["Support Center"])
 staff_router = APIRouter(prefix="/support/staff", tags=["Support Staff"])
@@ -204,7 +204,6 @@ class TicketActions(BaseModel):
     forward: list[Destination]
     escalate: bool
     escalate_to: str | None
-    take: bool
     assign: bool
     priority: bool
     attach: bool
@@ -224,12 +223,12 @@ class Reply(BaseModel):
 
 class StatusChange(BaseModel):
     status: TicketStatus
-    note: MaybeText = Field(default=None, max_length=4000, description="Required when resolving (the resolution note).")
+    note: Annotated[MaybeText, AtMost(4000)] = Field(default=None, description="Required when resolving (the resolution note).")
 
 
 class PriorityChange(BaseModel):
     priority: TicketPriority
-    note: MaybeText = Field(default=None, max_length=2000)
+    note: Annotated[MaybeText, AtMost(2000)] = None
 
 
 class AssignTicket(BaseModel):
@@ -244,7 +243,7 @@ class Forward(BaseModel):
 
 
 class Cancel(BaseModel):
-    note: MaybeText = Field(default=None, max_length=2000, description="Required when a manager cancels.")
+    note: Annotated[MaybeText, AtMost(2000)] = Field(default=None, description="Required when a manager cancels.")
 
 
 class QueueAssignee(BaseModel):
@@ -487,8 +486,8 @@ class NewAgent(BaseModel):
 
 class StaffCreate(BaseModel):
     level: TicketLevel
-    user_id: uuid.UUID | None = Field(default=None, description="An existing account (see /support/staff/candidates).")
-    new_account: NewAgent | None = Field(default=None, description="Platform only: create a support agent account.")
+    new_account: NewAgent = Field(description="The new staff member's account: support staff are always their own "
+                                              "accounts, never existing users.")
     branch_id: uuid.UUID | None = Field(default=None, description="Branch level: the branch (a Branch Manager's own).")
     staff_role: StaffRole = StaffRole.AGENT
     skills: list[Tag] = Field(default_factory=list, max_length=30)
@@ -543,16 +542,8 @@ class StaffCreated(StaffRead):
     temporary_password: str | None = Field(description="Only for a new support agent account; shown once.")
 
 
-class StaffCandidate(BaseModel):
-    user_id: uuid.UUID
-    full_name: str
-    email: str
-    role: str
-    branch_name: str | None
-
-
 class ReassignOpen(BaseModel):
-    note: MaybeText = Field(default=None, max_length=500)
+    note: Annotated[MaybeText, AtMost(500)] = None
 
 
 class Reassigned(BaseModel):
@@ -591,26 +582,20 @@ def list_staff(principal: StaffManager, staff: StaffServiceDep, level: TicketLev
     return ok([StaffRead(**_staff(v)) for v in staff.list(principal, level=level, branch_id=branch_id, search=search)])
 
 
-@staff_router.get("/candidates", response_model=ApiResponse[list[StaffCandidate]], responses=_errors(403, 422))
-def staff_candidates(principal: StaffManager, staff: StaffServiceDep, level: TicketLevel,
-                     branch_id: uuid.UUID | None = None, search: Annotated[str | None, Query(max_length=200)] = None):
-    """Accounts the caller may put on duty at that level (not on duty already)."""
-    rows = staff.candidates(principal, level=level, branch_id=branch_id, search=search)
-    return ok([StaffCandidate(user_id=u.id, full_name=u.full_name, email=u.email, role=u.role, branch_name=b) for u, b in rows])
-
-
 @staff_router.post("", response_model=ApiResponse[StaffCreated], status_code=201, responses=_errors(403, 409, 422))
-def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep, confirm_code: StepUp):
-    """Put someone on support duty, with their skills, capacity and availability. The Master Admin may create
-    a new support agent account instead (new_account); its temporary password is returned once. Needs an
-    authenticator code: support staff read other people's tickets."""
+def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep, service: Service,
+              confirm_code: StepUp):
+    """Create a support staff account and put it on duty, with its skills, capacity and availability; its
+    temporary password is returned once. A bank's staff are in that bank (and branch); Governix's have no bank.
+    Tickets waiting unassigned in the queue go to them by workload. Needs an authenticator code: support staff
+    read other people's tickets."""
     confirm_code("support_staff.added")
     created, password = staff.create(
-        principal, level=body.level, user_id=body.user_id,
-        new_account=body.new_account.model_dump() if body.new_account else None, branch_id=body.branch_id,
+        principal, level=body.level, new_account=body.new_account.model_dump(), branch_id=body.branch_id,
         staff_role=body.staff_role, skills=body.skills, capacity=body.capacity, availability=body.availability,
         serves=body.serves,
     )
+    service.assign_waiting(principal, created.level, created.organization_id, created.branch_id)
     return ok(StaffCreated(**_staff(staff.view(principal, created.id)), temporary_password=password))
 
 
@@ -622,23 +607,27 @@ def my_duty(principal: Supporter, staff: StaffServiceDep):
 
 
 @staff_router.patch("/me", response_model=ApiResponse[StaffRead], responses=_errors(404))
-def set_my_availability(body: MyAvailability, principal: Supporter, staff: StaffServiceDep):
-    """Staff set their own availability. Away, busy or offline: no new tickets; their own stay with them."""
-    staff.set_my_availability(principal, body.availability)
+def set_my_availability(body: MyAvailability, principal: Supporter, staff: StaffServiceDep, service: Service):
+    """Staff set their own availability. Away, busy or offline: no new tickets; their own stay with them.
+    Available again: tickets waiting in their queue come to them by workload."""
+    profile = staff.set_my_availability(principal, body.availability)
+    service.assign_waiting(principal, profile.level, profile.organization_id, profile.branch_id)
     return ok(StaffRead(**_staff(staff.mine(principal))))
 
 
 @staff_router.patch("/{staff_id}", response_model=ApiResponse[StaffRead], responses=_errors(403, 404, 422))
-def update_staff(staff_id: uuid.UUID, body: StaffUpdate, principal: StaffManager, staff: StaffServiceDep):
+def update_staff(staff_id: uuid.UUID, body: StaffUpdate, principal: StaffManager, staff: StaffServiceDep,
+                 service: Service):
     """Change role (agent/lead), skills, capacity, availability, active, or the banks a platform member serves.
-    Their open tickets stay with them (see /reassign)."""
-    staff.update(principal, staff_id, body.model_dump(exclude_unset=True))
+    Their open tickets stay with them (see /reassign); any room they gain takes waiting tickets by workload."""
+    profile = staff.update(principal, staff_id, body.model_dump(exclude_unset=True))
+    service.assign_waiting(principal, profile.level, profile.organization_id, profile.branch_id)
     return ok(StaffRead(**_staff(staff.view(principal, staff_id))))
 
 
 @staff_router.delete("/{staff_id}", response_model=ApiResponse[dict], responses=_errors(403, 404, 409))
 def remove_staff(staff_id: uuid.UUID, principal: StaffManager, staff: StaffServiceDep):
-    """Take someone off support duty (their account stays). Refused while they hold open tickets."""
+    """Take someone off support duty and close their staff account. Refused while they hold open tickets."""
     staff.remove(principal, staff_id)
     return ok({"removed": True})
 
@@ -655,13 +644,13 @@ def reassign_open(staff_id: uuid.UUID, body: ReassignOpen, principal: StaffManag
 class SupportCategoryCreate(BaseModel):
     name: Name = Field(min_length=2, max_length=100)
     route: CategoryRoute = CategoryRoute.AUTO
-    description: MaybeText = Field(default=None, max_length=300)
+    description: Annotated[MaybeText, AtMost(300)] = None
 
 
 class SupportCategoryUpdate(BaseModel):
     name: Name | None = Field(default=None, min_length=2, max_length=100)
     route: CategoryRoute | None = None
-    description: MaybeText = Field(default=None, max_length=300)
+    description: Annotated[MaybeText, AtMost(300)] = None
     is_active: bool | None = None
     sort_order: int | None = Field(default=None, ge=0, le=100_000)
 

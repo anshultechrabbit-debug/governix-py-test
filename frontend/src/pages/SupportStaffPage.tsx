@@ -3,7 +3,7 @@ import { Copy, Headset, Pencil, Plus, Shuffle, Tags, Trash2, UserPlus } from "lu
 import { useEffect, useState } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type {
-  CategoryRoute, Organization, Page, StaffAvailability, StaffCandidate, SupportCategoryAdmin, SupportStaff,
+  CategoryRoute, Organization, Page, StaffAvailability, SupportCategoryAdmin, SupportStaff,
   SupportStaffCreated, TicketLevel,
 } from "../api/types";
 import { useBranches } from "../components/domain";
@@ -59,8 +59,8 @@ export function SupportStaffPage() {
       <PageHeader
         title="Support Staff"
         subtitle={role === "master_admin" ? "Governix's Technical Support team: who is on duty, their skills, capacity and the banks they serve."
-          : role === "org_admin" ? "Head Office and branch support staff of your bank. They keep their usual role and also handle tickets."
-          : "Your branch's support staff. They keep their usual role and also handle tickets."}
+          : role === "org_admin" ? "Head Office and branch support staff of your bank: their own accounts, used only for tickets."
+          : "Your branch's support staff: their own accounts, used only for tickets."}
         actions={view === "staff" && <Button onClick={() => setAdding(true)}><UserPlus className="size-4" />Add support staff</Button>}
       />
       {role === "org_admin" && (
@@ -116,8 +116,12 @@ export function SupportStaffPage() {
                           }, "Done.") },
                         { label: s.is_active ? "Deactivate" : "Activate", onSelect: () => act(() => api.patch(`/support/staff/${s.id}`, { is_active: !s.is_active }),
                           s.is_active ? `${s.full_name} gets no new tickets.` : `${s.full_name} is back on duty.`) },
-                        { label: "Remove from support", danger: true, icon: <Trash2 className="size-4" />, disabled: s.open_tickets > 0,
-                          onSelect: () => act(() => api.delete(`/support/staff/${s.id}`), `${s.full_name} is no longer on support duty.`) },
+                        // A bank's support staff account exists only for this duty: removing it closes the account too.
+                        { label: s.role === "support_agent" && s.organization_id ? "Remove and close account" : "Remove from support",
+                          danger: true, icon: <Trash2 className="size-4" />, disabled: s.open_tickets > 0,
+                          onSelect: () => act(() => api.delete(`/support/staff/${s.id}`),
+                            s.role === "support_agent" && s.organization_id ? `${s.full_name}'s support account is closed.`
+                              : `${s.full_name} is no longer on support duty.`) },
                       ]} />
                     </li>
                   );
@@ -205,33 +209,24 @@ function AddStaffModal({ open, onClose, levels }: { open: boolean; onClose: () =
   const platform = levels[0] === "platform";
   const [level, setLevel] = useState<TicketLevel>(levels[0]);
   const [branchId, setBranchId] = useState("");
-  const [mode, setMode] = useState<"existing" | "new">(platform ? "new" : "existing");
-  const [search, setSearch] = useState("");
-  const [userId, setUserId] = useState("");
+  // Support staff are always new accounts of their own, never existing users.
   const [account, setAccount] = useState({ full_name: "", email: "", phone: "" });
   const [duty, setDuty] = useState<Duty>(EMPTY_DUTY);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<SupportStaffCreated | null>(null);
   useEffect(() => {
     if (!open) return;
-    setLevel(levels[0]); setBranchId(me?.role === "branch_manager" ? me.branch_id ?? "" : ""); setMode(platform ? "new" : "existing");
-    setSearch(""); setUserId(""); setAccount({ full_name: "", email: "", phone: "" }); setDuty(EMPTY_DUTY); setCreated(null);
+    setLevel(levels[0]); setBranchId(me?.role === "branch_manager" ? me.branch_id ?? "" : "");
+    setAccount({ full_name: "", email: "", phone: "" }); setDuty(EMPTY_DUTY); setCreated(null);
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
-  const needsBranch = level === "branch" && me?.role === "org_admin";
-  const { data: candidates } = useQuery({
-    queryKey: ["support", "candidates", level, branchId, search],
-    queryFn: () => api.get<StaffCandidate[]>(`/support/staff/candidates${qs({ level, branch_id: branchId || undefined, search: search.trim() || undefined })}`),
-    enabled: open && mode === "existing" && (!needsBranch || Boolean(branchId)),
-  });
-  const invalid = mode === "new" ? account.full_name.trim().length < 2 || !account.email.includes("@") : !userId;
+  const invalid = account.full_name.trim().length < 2 || !account.email.includes("@");
 
   async function submit() {
     setBusy(true);
     try {
       const result = await api.post<SupportStaffCreated>("/support/staff", {
         level, branch_id: level === "branch" ? branchId || null : null,
-        user_id: mode === "existing" ? userId : null,
-        new_account: mode === "new" ? { full_name: account.full_name.trim(), email: account.email.trim(), phone: account.phone.trim() || null } : null,
+        new_account: { full_name: account.full_name.trim(), email: account.email.trim(), phone: account.phone.trim() || null },
         ...duty, serves: platform ? duty.serves : null,
       });
       void queryClient.invalidateQueries({ queryKey: ["support"] });
@@ -249,14 +244,15 @@ function AddStaffModal({ open, onClose, levels }: { open: boolean; onClose: () =
 
   return (
     <Modal open={open} onClose={onClose} wide icon={<UserPlus className="size-5" />} title="Add support staff"
-      description="They keep their account and role; this puts them on duty in a queue."
+      description="A new account just for support. It handles tickets only: no policies, documents or AI Assistant."
       footer={created ? <Button onClick={onClose}>Done</Button> : <>
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
         <Button disabled={invalid || (level === "branch" && !branchId)} loading={busy} onClick={submit}>Add</Button>
       </>}>
       {created ? (
         <div className="space-y-3 text-sm">
-          <p><span className="font-medium">{created.full_name}</span> can now sign in as a Support Agent with this temporary password. It is shown once.</p>
+          <p><span className="font-medium">{created.full_name}</span> can now sign in to {LEVEL_LABEL[created.level]}{created.branch_name ? ` · ${created.branch_name}` : ""} with
+            this temporary password. It is shown once; they set their own password after signing in.</p>
           <div className="flex items-center gap-2 rounded-md bg-subtle px-3 py-2 font-mono">
             <span className="flex-1 break-all">{created.temporary_password}</span>
             <Button size="sm" variant="ghost" onClick={() => { void copyText(created.temporary_password ?? ""); toast("ok", "Copied."); }}><Copy className="size-4" /></Button>
@@ -266,34 +262,20 @@ function AddStaffModal({ open, onClose, levels }: { open: boolean; onClose: () =
         <div className="space-y-4">
           {levels.length > 1 && (
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="Queue"><Select value={level} onChange={(e) => { setLevel(e.target.value as TicketLevel); setUserId(""); }}>
+              <Field label="Queue"><Select value={level} onChange={(e) => setLevel(e.target.value as TicketLevel)}>
                 {levels.map((l) => <option key={l} value={l}>{LEVEL_LABEL[l]}</option>)}</Select></Field>
               {level === "branch" && (
-                <Field label="Branch *"><Select value={branchId} onChange={(e) => { setBranchId(e.target.value); setUserId(""); }}>
+                <Field label="Branch *"><Select value={branchId} onChange={(e) => setBranchId(e.target.value)}>
                   <option value="">Choose…</option>
                   {branches?.items.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</Select></Field>
               )}
             </div>
           )}
-          {platform && (
-            <Tabs<"existing" | "new"> value={mode} onChange={setMode}
-              tabs={[{ id: "new", label: "New support agent" }, { id: "existing", label: "Existing account" }]} />
-          )}
-          {mode === "new" ? (
-            <div className="grid gap-4 sm:grid-cols-3">
-              <Field label="Full name *"><Input value={account.full_name} onChange={(e) => setAccount({ ...account, full_name: e.target.value })} /></Field>
-              <Field label="Email *"><Input type="email" value={account.email} onChange={(e) => setAccount({ ...account, email: e.target.value })} /></Field>
-              <Field label="Phone"><Input value={account.phone} onChange={(e) => setAccount({ ...account, phone: e.target.value })} /></Field>
-            </div>
-          ) : (
-            <Field label="Person *" hint={level === "branch" ? "People of that branch who are not on duty yet." : level === "organization" ? "Anyone in your bank who is not on duty yet." : "Support agents and Master Admins."}>
-              <Input placeholder="Search name or email…" value={search} onChange={(e) => setSearch(e.target.value)} />
-              <Select className="mt-2" value={userId} onChange={(e) => setUserId(e.target.value)} disabled={!candidates}>
-                <option value="">{needsBranch && !branchId ? "Choose a branch first" : candidates?.length === 0 ? "No one found" : "Choose…"}</option>
-                {candidates?.map((c) => <option key={c.user_id} value={c.user_id}>{c.full_name} · {c.email}{c.branch_name ? ` · ${c.branch_name}` : ""}</option>)}
-              </Select>
-            </Field>
-          )}
+          <div className="grid gap-4 sm:grid-cols-3">
+            <Field label="Full name *"><Input value={account.full_name} onChange={(e) => setAccount({ ...account, full_name: e.target.value })} /></Field>
+            <Field label="Email *"><Input type="email" value={account.email} onChange={(e) => setAccount({ ...account, email: e.target.value })} /></Field>
+            <Field label="Phone"><Input value={account.phone} onChange={(e) => setAccount({ ...account, phone: e.target.value })} /></Field>
+          </div>
           <DutyFields form={duty} set={(patch) => setDuty({ ...duty, ...patch })} platform={platform} />
         </div>
       )}

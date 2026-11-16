@@ -59,7 +59,6 @@ from app.modules.tickets.queues import (
     queue_staff_query,
     reads_notes_of,
     visible_clause,
-    works_queue,
 )
 from app.modules.tickets.triage import Recommendation, categories_for, recommend
 from app.modules.users.model import User
@@ -324,6 +323,49 @@ class TicketService:
         found.staff.last_assigned_at = datetime.now(UTC)
         return user
 
+    def assign_waiting(self, actor: Principal | None, level: str, organization_id: uuid.UUID | None,
+                       branch_id: uuid.UUID | None) -> int:
+        """Give a queue's waiting (unassigned, open) tickets to whoever has room, oldest first, by workload. Runs
+        when room may have appeared: someone added, back, activated or given more capacity, a ticket finished or
+        moved on, and on every SLA sweep. Stops at the first ticket nobody can take (the managers were told when
+        it was left unassigned). Commits."""
+        query = select(Ticket).where(Ticket.level == level, Ticket.assigned_to_id.is_(None),
+                                     Ticket.status.in_(list(ACTIVE_STATUSES)))
+        if level != TicketLevel.PLATFORM:
+            query = query.where(Ticket.organization_id == organization_id)
+            if level == TicketLevel.BRANCH:
+                query = query.where(Ticket.branch_id == branch_id)
+        assigned = 0
+        for ticket in self.session.scalars(query.order_by(Ticket.created_at).with_for_update(skip_locked=True)):
+            found = assignment.best(self.session, ticket)
+            if found is None:
+                if level == TicketLevel.PLATFORM:
+                    continue  # platform staff serve chosen banks: the next bank's ticket may still fit
+                break
+            self._set_assignee(actor, ticket, self.session.get(User, found.staff.user_id), auto=True,
+                               why="Assigned by workload once someone had room.", load=found.explain())
+            found.staff.last_assigned_at = datetime.now(UTC)
+            ticket.updated_at = datetime.now(UTC)
+            assigned += 1
+        self.session.commit()
+        return assigned
+
+    def assign_waiting_everywhere(self) -> int:
+        """Every queue with a waiting ticket (the SLA sweep's backstop)."""
+        queues = self.session.execute(
+            select(Ticket.level, Ticket.organization_id, Ticket.branch_id)
+            .where(Ticket.assigned_to_id.is_(None), Ticket.status.in_(list(ACTIVE_STATUSES))).distinct()
+        ).all()
+        done: set[tuple] = set()
+        total = 0
+        for level, organization_id, branch_id in queues:
+            key = (level,) if level == TicketLevel.PLATFORM else (level, organization_id,
+                                                                     branch_id if level == TicketLevel.BRANCH else None)
+            if key not in done:
+                done.add(key)
+                total += self.assign_waiting(None, level, organization_id, branch_id)
+        return total
+
     def _set_assignee(self, actor: Principal | None, ticket: Ticket, user: User | None, *, auto: bool,
                       why: str | None = None, load: dict | None = None, forwarded: str | None = None) -> None:
         """`forwarded`: who forwarded it, from where and why, told to the new assignee (not written on the
@@ -354,22 +396,24 @@ class TicketService:
                    data={"ticket_id": str(ticket.id)}, exclude=exclude)
 
     def assign(self, principal: Principal, ticket_id: uuid.UUID, user_id: uuid.UUID | None) -> Ticket:
-        """Take a ticket (a member of its queue), or assign/reassign/unassign it (its managers and leads)."""
+        """Assign, reassign or unassign a ticket to someone else in its queue (its managers and leads). Never to
+        oneself: tickets are given out by workload."""
         ticket = self._locked(principal, ticket_id)
         duty = self.duty(principal)
         if ticket.status in FINISHED or ticket.status == TicketStatus.AWAITING_CONFIRMATION:
             raise ConflictError("This ticket cannot be assigned now.", code="INVALID_STATE")
-        taking = user_id == principal.user_id
-        if taking:
-            if not can_handle(principal, duty, ticket):
-                raise PermissionDeniedError("Only the team handling this ticket can take it.")
-        elif not can_manage(principal, duty, ticket):
+        # Tickets go to people by workload (assignment.py). Nobody picks one for themselves; a queue's manager or
+        # lead may move one to someone else.
+        if user_id == principal.user_id:
+            raise PermissionDeniedError("Tickets are assigned automatically by workload: you cannot assign one to "
+                                        "yourself.", code="SELF_ASSIGN")
+        if not can_manage(principal, duty, ticket):
             raise PermissionDeniedError("Only the queue's manager or lead can assign this ticket.")
         if user_id == ticket.assigned_to_id:
             return ticket
         user = None
         if user_id is not None:
-            if not taking and user_id not in self._queue_member_ids(ticket):
+            if user_id not in self._queue_member_ids(ticket):
                 raise ValidationError("That person is not on duty in this ticket's queue.", code="NOT_IN_QUEUE")
             if user_id == ticket.created_by_id:
                 raise ValidationError("A ticket cannot be assigned to the person who raised it.",
@@ -440,6 +484,7 @@ class TicketService:
         notified. The staff side forwards; the creator may escalate an overdue ticket."""
         ticket = self._locked(principal, ticket_id)
         duty = self.duty(principal)
+        old_queue = (ticket.level, ticket.organization_id, ticket.branch_id)
         if not confirmed:
             raise ValidationError("Confirm the forward.", code="CONFIRMATION_REQUIRED")
         if ticket.status not in ACTIVE_STATUSES:
@@ -492,13 +537,14 @@ class TicketService:
         notice = (f"{sender.full_name if sender else 'Someone'} {'escalated' if escalation else 'forwarded'} it "
                   f"from {source['queue']}: {reason}")
         if user_id is not None:
-            if user_id not in self._queue_member_ids(ticket) or user_id == ticket.created_by_id:
+            if user_id not in self._queue_member_ids(ticket) or user_id in (ticket.created_by_id, principal.user_id):
                 raise ValidationError("That person is not on duty in that queue.", code="NOT_IN_QUEUE")
             self._set_assignee(principal, ticket, self.session.get(User, user_id), auto=False, forwarded=notice)
         else:
             # or, with nobody available, the queue's managers are told
             self._auto_assign(principal, ticket, forwarded=notice)
         self.session.commit()
+        self.assign_waiting(principal, *old_queue)  # whoever held it has room again
         return ticket
 
     def _forwarded_away(self, principal: Principal, duty: Duty, ticket: Ticket) -> bool:
@@ -618,6 +664,8 @@ class TicketService:
                body=note, organization_id=ticket.organization_id, link=f"/support/{ticket.id}",
                data={"ticket_id": str(ticket.id), "status": status}, exclude=principal.user_id)
         self.session.commit()
+        if status not in ACTIVE_STATUSES:  # resolved: the assignee has room for a waiting ticket
+            self.assign_waiting(principal, ticket.level, ticket.organization_id, ticket.branch_id)
         return ticket
 
     def cancel(self, principal: Principal, ticket_id: uuid.UUID, note: str | None) -> Ticket:
@@ -642,6 +690,8 @@ class TicketService:
                    f"{reference(ticket)} cancelled: {ticket.subject}", body=note, organization_id=ticket.organization_id,
                    link=f"/support/{ticket.id}", data={"ticket_id": str(ticket.id)}, exclude=principal.user_id)
         self.session.commit()
+        if not draft:
+            self.assign_waiting(principal, ticket.level, ticket.organization_id, ticket.branch_id)
         return ticket
 
     def set_priority(self, principal: Principal, ticket_id: uuid.UUID, priority: TicketPriority, note: str | None) -> Ticket:
@@ -896,8 +946,6 @@ class TicketService:
             "forward": self.destinations(ticket) if handler and active else [],
             "escalate": bool(next_level) and active and (handler or (creator and sla.is_overdue(ticket))),
             "escalate_to": queue_name(self.session, next_level, ticket.branch_id) if next_level else None,
-            "take": handler and active and ticket.assigned_to_id != principal.user_id
-            and works_queue(duty, ticket.level, ticket.organization_id, ticket.branch_id),
             "assign": manager and active,
             "priority": handler and not draft and ticket.status not in FINISHED,
             "attach": ticket.status not in NO_MESSAGES and not read_only,

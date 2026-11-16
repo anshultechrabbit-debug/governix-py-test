@@ -59,7 +59,8 @@ class UserService:
             raise PermissionDeniedError(f"You cannot assign the role {role}.")
 
         if role is Role.SUPPORT_AGENT:
-            # Governix's technical support staff belong to the platform, not to an organization.
+            # Governix's technical support staff belong to the platform. (A bank's support staff are made on the
+            # Support Staff page, in their bank and branch, and never move: see update.)
             return None, None, None
         if principal.role is Role.MASTER_ADMIN:
             if organization_id is None or self.organizations.get(organization_id) is None:
@@ -220,6 +221,11 @@ class UserService:
                 )
 
         scope_fields = {"role", "organization_id", "branch_id", "department_id"}
+        if user.role == Role.SUPPORT_AGENT and user.organization_id is not None and any(
+            changes.get(f) != getattr(user, f) for f in scope_fields & changes.keys()
+        ):
+            raise ValidationError("A bank's support staff account keeps its role and queue. Remove it from "
+                                  "Support Staff and add the person again instead.", code="SUPPORT_STAFF_ACCOUNT")
         if scope_fields & changes.keys():
             previous_organization_id = user.organization_id
             role = Role(changes.get("role") or user.role)

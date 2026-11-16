@@ -3,6 +3,9 @@
 Each type cleans the value first (trims, collapses runs of spaces in one-line fields), then checks it, and refuses
 with a message a person can act on ("must include a capital letter (A-Z)"). Lengths stay on each field
 (`Field(min_length=..., max_length=...)`) and are measured after the cleaning, so "   " never counts as text.
+An optional type that turns a blank box into None (Phone, Website, Maybe*) takes its limit as `AtMost(n)`
+(`Annotated[MaybeText, AtMost(2000)]`), never `Field(max_length=n)`: pydantic applies a field's max_length after
+the cleaning, to the whole value, and measuring None is a TypeError (a 500), not a 422.
 
     PersonName   letters (any language), spaces, apostrophes, hyphens and dots; at least 2 letters
     Name         names and titles of things (banks, branches, policies, tickets): one line, at least one letter or
@@ -19,7 +22,7 @@ import re
 from typing import Annotated
 
 from pydantic import AfterValidator, BeforeValidator, Field
-from pydantic_core import PydanticCustomError
+from pydantic_core import PydanticCustomError, core_schema
 
 PASSWORD_MIN = 12
 PASSWORD_MAX = 128
@@ -58,6 +61,27 @@ def _blank_is_none(value):
     if isinstance(value, str) and not value.strip():
         return None
     return value
+
+
+class AtMost:
+    """The length limit of an optional value: None ("not given") passes, a value is measured after its cleaning.
+    Shown as maxLength in the API schema, as Field(max_length=) would be."""
+
+    def __init__(self, length: int) -> None:
+        self.length = length
+
+    def __get_pydantic_core_schema__(self, source, handler):
+        return core_schema.no_info_after_validator_function(self._check, handler(source))
+
+    def __get_pydantic_json_schema__(self, schema, handler):
+        json_schema = handler(schema)
+        json_schema["maxLength"] = self.length
+        return json_schema
+
+    def _check(self, value):
+        if value is not None and len(value) > self.length:
+            raise _fail("string_too_long", f"must be at most {self.length} characters")
+        return value
 
 
 # --- checks (after) -----------------------------------------------------------------------------------------------
@@ -184,10 +208,10 @@ Line = Annotated[str, BeforeValidator(_one_line), AfterValidator(_not_blank),
 Text = Annotated[str, BeforeValidator(_text), AfterValidator(_not_blank),
                  _rules("line breaks allowed, no control characters", "not blank", "trimmed")]
 Phone = Annotated[str | None, BeforeValidator(_blank_is_none), BeforeValidator(_one_line),
-                  Field(max_length=30), AfterValidator(_phone),
+                  AtMost(30), AfterValidator(_phone),
                   _rules("digits, spaces and + ( ) - . only", "7-15 digits", "+ only at the start", "blank = none")]
 Website = Annotated[str | None, BeforeValidator(_blank_is_none), BeforeValidator(_one_line),
-                    Field(max_length=300), AfterValidator(_website),
+                    AtMost(300), AfterValidator(_website),
                     _rules("starts with http:// or https://", "no spaces", "blank = none")]
 Tag = Annotated[str, BeforeValidator(_one_line), Field(min_length=1, max_length=50), AfterValidator(_tag),
                 _rules("one item, no commas", "no < or >")]

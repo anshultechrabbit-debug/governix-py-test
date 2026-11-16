@@ -14,10 +14,10 @@ from app.infrastructure.ai.llm.base import LLMProvider, LLMResult
 from app.modules.auth.dependencies import principal_from_user
 from app.modules.auth.permissions import Role
 from app.modules.tickets import sla
-from app.modules.tickets.model import Ticket, TicketTeam
+from app.modules.tickets.model import SupportStaff, Ticket, TicketTeam
 from app.modules.tickets.service import TicketService
 from app.modules.users.model import User
-from app.tests.factories import AuthClient, login, make_tenant, make_user
+from app.tests.factories import _PASSWORD_HASH, AuthClient, login, make_tenant, make_user
 from app.workers.runtime import get_runtime
 
 pytestmark = pytest.mark.integration
@@ -60,9 +60,24 @@ def master(db):
     return user
 
 
-def staff_user(db, tenant, branch=None, name="Staff"):
-    user = make_user(db, Role.DEPARTMENT_USER, org=tenant.org, branch=branch or tenant.branch_a)
-    user.full_name = name
+def new_account(name):
+    return {"full_name": name, "email": f"{name.lower()}-{uuid.uuid4().hex[:6]}@bank.example"}
+
+
+def bank_staff(db, manager, name, level="branch", **body):
+    """A bank's support staff member, created as their own account by `manager` (as the Support Staff page does),
+    with the test password so `login` works."""
+    created = add_staff(manager, level=level, new_account=new_account(name), **body)
+    user = db.get(User, uuid.UUID(created["user_id"]))
+    db.refresh(user)
+    user.password_hash = _PASSWORD_HASH
+    db.commit()
+    return user
+
+
+def legacy_staff(db, user, branch):
+    """A profile on an ordinary account, as made before staff had their own accounts: still honoured."""
+    db.add(SupportStaff(user_id=user.id, level="branch", organization_id=user.organization_id, branch_id=branch.id))
     db.commit()
     return user
 
@@ -184,25 +199,31 @@ def test_the_model_cannot_route_by_instruction_or_reach_other_tickets(client, db
 # --- staff management -----------------------------------------------------------------------------------------
 
 def test_each_manager_manages_only_their_own_level(client, db, tenant, master):
-    staff_a = staff_user(db, tenant, name="Asha")
-    staff_b = staff_user(db, tenant, branch=tenant.branch_b, name="Bilal")
     manager = login(client, tenant.manager_a)
-    added = add_staff(manager, level="branch", user_id=str(staff_a.id), skills=["Cash", "cash", " KYC "])
+    added = add_staff(manager, level="branch", new_account=new_account("Asha"), skills=["Cash", "cash", " KYC "])
     assert added["branch_id"] == str(tenant.branch_a.id) and added["skills"] == ["Cash", "KYC"]
-    # Not another branch's people, not Head Office, not the platform.
-    refused = manager.post("/support/staff", json={"level": "branch", "user_id": str(staff_b.id)})
-    assert refused.status_code == 422 and refused.json()["error"]["reason"] == "NOT_ELIGIBLE"
-    assert manager.post("/support/staff", json={"level": "organization", "user_id": str(staff_b.id)}).status_code == 403
+    # Their own account, in the bank and the branch, for tickets only; its password is shown once.
+    assert added["role"] == "support_agent" and added["temporary_password"]
+    asha = db.get(User, uuid.UUID(added["user_id"]))
+    assert (asha.organization_id, asha.branch_id) == (tenant.org.id, tenant.branch_a.id)
+    # Existing users are never put on duty: a new account is required.
+    assert manager.post("/support/staff", json={"level": "branch", "user_id": str(tenant.user_a1.id)}).status_code == 422
+    taken = manager.post("/support/staff", json={"level": "branch", "new_account": {"full_name": "Asha Two",
+                                                                                     "email": asha.email}})
+    assert taken.status_code == 422 and taken.json()["error"]["reason"] == "EMAIL_TAKEN"
+    # Not Head Office, not the platform.
+    assert manager.post("/support/staff", json={"level": "organization", "new_account": new_account("Bilal")}).status_code == 403
     assert manager.post("/support/staff", json={"level": "platform", "new_account": {
         "full_name": "Xavier", "email": "x@governix.io"}}).status_code == 403
-    assert manager.post("/support/staff", json={"level": "branch", "user_id": str(staff_a.id)}).status_code == 409
     assert [s["full_name"] for s in manager.get("/support/staff").json()["data"]] == ["Asha"]
     assert login(client, tenant.manager_b).get("/support/staff").json()["data"] == []
     assert login(client, tenant.manager_b).patch(f"/support/staff/{added['id']}", json={"capacity": 3}).status_code == 404
 
     # The Org Admin manages Head Office and every branch of the bank; another bank's admin sees nothing.
     admin = login(client, tenant.admin)
-    add_staff(admin, level="organization", user_id=str(staff_b.id), staff_role="lead")
+    head = add_staff(admin, level="organization", new_account=new_account("Bilal"), staff_role="lead")
+    bilal = db.get(User, uuid.UUID(head["user_id"]))
+    assert (bilal.organization_id, bilal.branch_id) == (tenant.org.id, None)
     assert {s["level"] for s in admin.get("/support/staff").json()["data"]} == {"branch", "organization"}
     other = make_tenant(db)
     outsider = login(client, other.admin)
@@ -210,6 +231,20 @@ def test_each_manager_manages_only_their_own_level(client, db, tenant, master):
     assert outsider.patch(f"/support/staff/{added['id']}", json={"is_active": False}).status_code == 404
     # Users and support agents manage nothing.
     assert login(client, tenant.user_a1).get("/support/staff").status_code == 403
+
+    # The staff account works tickets only, and keeps its role and queue.
+    staff = agent_login(client, db, added)
+    assert staff.get("/policies").status_code == 403 and staff.get("/documents").status_code == 403
+    assert staff.get("/support/staff").status_code == 403
+    assert staff.get("/support/staff/me").json()["data"]["level"] == "branch"
+    moved = login(client, master).patch(f"/users/{bilal.id}", json={"role": "org_admin"})
+    assert moved.status_code == 422 and moved.json()["error"]["reason"] == "SUPPORT_STAFF_ACCOUNT"
+    # Removing them from support closes the account.
+    assert manager.delete(f"/support/staff/{added['id']}").status_code == 200
+    db.expire_all()
+    asha = db.get(User, asha.id)
+    assert asha.deleted_at is not None and not asha.is_active
+    assert staff.get("/support/staff/me").status_code == 401
 
     # The Master Admin creates platform support agents, who see no bank's documents.
     platform = login(client, master)
@@ -227,11 +262,10 @@ def test_each_manager_manages_only_their_own_level(client, db, tenant, master):
 
 def test_assignment_prefers_the_lowest_normalized_workload(client, db, tenant):
     manager = login(client, tenant.manager_a)
-    big, small, away, full = (staff_user(db, tenant, name=n) for n in ("Big", "Small", "Away", "Full"))
-    add_staff(manager, level="branch", user_id=str(big.id), capacity=10)
-    add_staff(manager, level="branch", user_id=str(small.id), capacity=2)
-    add_staff(manager, level="branch", user_id=str(away.id), capacity=50, availability="away")
-    add_staff(manager, level="branch", user_id=str(full.id), capacity=1)
+    big = bank_staff(db, manager, "Big", capacity=10)
+    bank_staff(db, manager, "Small", capacity=2)
+    bank_staff(db, manager, "Away", capacity=50, availability="away")
+    full = bank_staff(db, manager, "Full", capacity=1)
     user = login(client, tenant.user_a1)
 
     # Full already holds one ticket (capacity 1): it is never chosen.
@@ -255,13 +289,41 @@ def test_assignment_prefers_the_lowest_normalized_workload(client, db, tenant):
     assert message["title"].startswith("Assigned to you")
 
 
+def test_nobody_assigns_a_ticket_to_themselves_waiting_tickets_go_by_workload(client, db, tenant, settings):
+    """No "take": a ticket left unassigned (nobody on duty) goes to whoever gets room, by workload, and a lead or
+    manager may move a ticket to someone else but never to themselves."""
+    manager = login(client, tenant.manager_a)
+    user = login(client, tenant.user_a1)
+    waiting = confirm(user, raise_ticket(user))
+    assert waiting["assigned_to_name"] is None
+    # Someone joins the queue: the waiting ticket is theirs at once.
+    lead = bank_staff(db, manager, "Lena", staff_role="lead", capacity=1)
+    db.expire_all()
+    assert db.get(Ticket, uuid.UUID(waiting["id"])).assigned_to_id == lead.id
+    # She is full (1/1): the next one waits, and goes to her once she resolves the first.
+    second = confirm(user, raise_ticket(user))
+    assert second["assigned_to_name"] is None
+    me = login(client, lead)
+    assert me.post(f"/support/tickets/{second['id']}/assign", json={"user_id": str(lead.id)}).json()["error"][
+        "reason"] == "SELF_ASSIGN"
+    assert manager.post(f"/support/tickets/{second['id']}/assign", json={"user_id": str(manager.user.id)}).status_code == 403
+    me.post(f"/support/tickets/{waiting['id']}/status", json={"status": "resolved", "note": "Done."})
+    db.expire_all()
+    assert db.get(Ticket, uuid.UUID(second["id"])).assigned_to_id == lead.id
+    # The 15-minute sweep catches any still waiting: raise capacity directly (no trigger) and sweep.
+    third = confirm(user, raise_ticket(user))
+    db.execute(update(SupportStaff).where(SupportStaff.user_id == lead.id).values(capacity=5))
+    db.commit()
+    TicketService(db, client.app.state.storage, settings).assign_waiting_everywhere()
+    db.expire_all()
+    assert db.get(Ticket, uuid.UUID(third["id"])).assigned_to_id == lead.id
+
+
 def test_skills_pick_among_the_eligible(client, db, tenant):
     use_model(Triage(team="branch", confidence=0.9, skills=["kyc"], issue_type="kyc_documents"))
     admin = login(client, tenant.admin)
-    general, kyc = staff_user(db, tenant, name="General"), staff_user(db, tenant, name="Kyc")
-    add_staff(admin, level="branch", user_id=str(general.id), branch_id=str(tenant.branch_a.id))
-    add_staff(admin, level="branch", user_id=str(kyc.id), branch_id=str(tenant.branch_a.id), skills=["KYC"],
-              capacity=1)
+    bank_staff(db, admin, "General", branch_id=str(tenant.branch_a.id))
+    bank_staff(db, admin, "Kyc", branch_id=str(tenant.branch_a.id), skills=["KYC"], capacity=1)
     user = login(client, tenant.user_a1)
     draft = raise_ticket(user, subject="Customer KYC", description="Which KYC documents for an NRI account opening?")
     assert draft["routing"]["skills"] == ["KYC"]
@@ -274,9 +336,7 @@ def test_skills_pick_among_the_eligible(client, db, tenant):
 
 def test_concurrent_confirmations_never_overload_one_person(client, db, db_engine, tenant, settings):
     manager = login(client, tenant.manager_a)
-    one, two = staff_user(db, tenant, name="One"), staff_user(db, tenant, name="Two")
-    add_staff(manager, level="branch", user_id=str(one.id), capacity=1)
-    add_staff(manager, level="branch", user_id=str(two.id), capacity=1)
+    one, two = bank_staff(db, manager, "One", capacity=1), bank_staff(db, manager, "Two", capacity=1)
     drafts = [raise_ticket(login(client, who)) for who in (tenant.user_a1, tenant.user_a2)]
     factory = create_session_factory(db_engine)
     storage = client.app.state.storage
@@ -307,8 +367,7 @@ def test_concurrent_confirmations_never_overload_one_person(client, db, db_engin
 
 def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master):
     manager = login(client, tenant.manager_a)
-    asha = staff_user(db, tenant, name="Asha")
-    add_staff(manager, level="branch", user_id=str(asha.id))
+    asha = bank_staff(db, manager, "Asha")
     platform = login(client, master)
     agent = add_staff(platform, level="platform", new_account={"full_name": "Priya", "email": "priya@governix.io"})
     user = login(client, tenant.user_a1)
@@ -328,7 +387,7 @@ def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master)
     assert (result["queue_name"], result["assigned_to_name"]) == ("Technical Support", "Priya")
     # It left Asha's queue: she follows it, read-only.
     assert result["ticket"]["read_only"] is True and result["ticket"]["can_handle"] is False
-    assert not any(result["ticket"]["actions"][a] for a in ("reply", "note", "attach", "escalate", "take", "assign"))
+    assert not any(result["ticket"]["actions"][a] for a in ("reply", "note", "attach", "escalate", "assign"))
     assert result["ticket"]["actions"]["statuses"] == [] and result["ticket"]["actions"]["forward"] == []
     priya = agent_login(client, db, agent)
     moved = priya.get(f"/support/tickets/{ticket['id']}").json()["data"]
@@ -403,16 +462,17 @@ def test_internal_notes_stay_with_the_staff_side(client, db, tenant):
 def test_staff_never_handle_a_ticket_they_raised(client, db, tenant):
     """A Branch Support member who raises a ticket in their own queue is its requester only: no status menu,
     priority, take or forward, not in their Queue box, and it cannot be assigned to them."""
-    asha = staff_user(db, tenant, name="Asha")
+    # Bank staff accounts never raise tickets; an ordinary user still on duty from before (a legacy profile)
+    # or a manager raising one in a queue they run can.
+    asha = legacy_staff(db, tenant.user_a1, tenant.branch_a)
     manager = login(client, tenant.manager_a)
-    add_staff(manager, level="branch", user_id=str(asha.id))
-    add_staff(manager, level="branch", user_id=str(staff_user(db, tenant, name="Ravi").id))
+    bank_staff(db, manager, "Ravi")
     me = login(client, asha)
     ticket = confirm(me, raise_ticket(me))
     url = f"/support/tickets/{ticket['id']}"
     assert ticket["can_handle"] is False and ticket["assigned_to_name"] == "Ravi"
     actions = ticket["actions"]
-    assert actions["statuses"] == [] and not actions["take"] and not actions["priority"] and actions["forward"] == []
+    assert actions["statuses"] == [] and not actions["priority"] and actions["forward"] == []
     assert actions["reply"] and not actions["note"]
     assert me.post(f"{url}/status", json={"status": "in_progress"}).status_code == 403
     assert me.post(f"{url}/assign", json={"user_id": str(asha.id)}).status_code == 403
@@ -461,8 +521,7 @@ def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant):
 
 def test_sla_warnings_breaches_escalation_and_auto_close(client, db, tenant, settings):
     manager = login(client, tenant.manager_a)
-    asha = staff_user(db, tenant, name="Asha")
-    add_staff(manager, level="branch", user_id=str(asha.id))
+    asha = bank_staff(db, manager, "Asha")
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
     assert user.get(f"/support/tickets/{ticket['id']}").json()["data"]["actions"]["escalate"] is False
@@ -496,12 +555,14 @@ def test_sla_warnings_breaches_escalation_and_auto_close(client, db, tenant, set
 
 def test_reassigning_an_away_member_moves_their_tickets_visibly(client, db, tenant):
     manager = login(client, tenant.manager_a)
-    asha, bina = staff_user(db, tenant, name="Asha"), staff_user(db, tenant, name="Bina")
-    first = add_staff(manager, level="branch", user_id=str(asha.id))
+    first = add_staff(manager, level="branch", new_account=new_account("Asha"))
+    asha = db.get(User, uuid.UUID(first["user_id"]))
+    asha.password_hash = _PASSWORD_HASH
+    db.commit()
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
     assert ticket["assigned_to_name"] == "Asha"
-    add_staff(manager, level="branch", user_id=str(bina.id))
+    bina = bank_staff(db, manager, "Bina")
     manager.patch(f"/support/staff/{first['id']}", json={"availability": "away"})
     db.expire_all()
     assert db.get(Ticket, uuid.UUID(ticket["id"])).assigned_to_id == asha.id  # marking away moves nothing by itself

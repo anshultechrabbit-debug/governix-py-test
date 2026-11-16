@@ -50,12 +50,15 @@ def sweep(payload: dict, ctx: JobContext) -> None:
 
 @task(SUPPORT_SWEEP)
 def support_sweep(payload: dict, ctx: JobContext) -> None:
+    from app.modules.tickets.service import TicketService
     from app.modules.tickets.sla import sweep as sla_sweep
 
     rt = get_runtime()
     with rt.session_factory() as session:
         counts = sla_sweep(session, rt.settings)
         session.commit()
+        # Backstop: tickets left unassigned go to whoever has room now (assignment is never by hand).
+        counts["assigned"] = TicketService(session, rt.storage, rt.settings).assign_waiting_everywhere()
     if any(counts.values()):
         logger.info("Support SLA sweep: %s", counts)
     schedule_support_sweep(rt.queue, rt.settings.SUPPORT_SWEEP_MINUTES, after=datetime.fromisoformat(payload["slot"]))

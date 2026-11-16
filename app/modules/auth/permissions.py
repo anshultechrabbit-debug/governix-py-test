@@ -9,8 +9,9 @@ class Role(StrEnum):
     ORG_ADMIN = "org_admin"
     BRANCH_MANAGER = "branch_manager"
     DEPARTMENT_USER = "department_user"
-    # Governix's own technical support staff: platform-level, no organization, and no access to any
-    # organization's documents or policies. Created by the Master Admin (Support Center > Staff).
+    # Support staff accounts, created on the Support Staff page: Governix's technical support (no organization,
+    # by the Master Admin), or a bank's Head Office / Branch Support (in that bank, and branch, by its Org Admin
+    # or Branch Manager). Tickets only: no documents, policies, users or AI Assistant.
     SUPPORT_AGENT = "support_agent"
 
 
@@ -82,7 +83,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
     ),
     # Users read what is assigned to them and do not upload (spec access matrix).
     Role.DEPARTMENT_USER: frozenset(_TENANT_BASE),
-    # Works the Technical Support queue only: no documents, policies, users or audit.
+    # Works the support queue they are on duty in only: no documents, policies, users or audit.
     Role.SUPPORT_AGENT: frozenset({Permission.SUPPORT}),
 }
 

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpCircle, Download, Eye, Forward, Lock, Paperclip, Send, UserCheck } from "lucide-react";
+import { ArrowLeft, ArrowUpCircle, Download, Eye, Forward, Lock, Paperclip, Send } from "lucide-react";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api/client";
@@ -192,11 +192,6 @@ export function TicketPage() {
                 : ticket.response_due_at && active ? `due ${formatDateTime(ticket.response_due_at)}` : "—"],
               ["Reopened", ticket.reopen_count ? `${ticket.reopen_count}×` : "—"],
             ]} />
-            {a.take && (
-              <Button size="sm" variant="secondary" className="mt-4 w-full" loading={busy}
-                onClick={() => run(() => api.post(`/support/tickets/${id}/assign`, { user_id: me?.id }), "Assigned to you.")}>
-                <UserCheck className="size-4" />Take this ticket</Button>
-            )}
           </Card>
 
           {staffSide && <StaffActions ticket={ticket} busy={busy} run={run} onForward={setForwarding} />}
@@ -299,6 +294,7 @@ function StaffActions({ ticket, busy, run, onForward }: {
   onForward: (to: DestinationKey | "escalate") => void;
 }) {
   const a = ticket.actions;
+  const { me } = useAuth();
   const [status, setStatus] = useState<TicketStatus | "">("");
   const [note, setNote] = useState("");
   const [cancelNote, setCancelNote] = useState("");
@@ -340,11 +336,12 @@ function StaffActions({ ticket, busy, run, onForward }: {
             </Field>
           )}
           {a.assign && (
-            <Field label="Assign to" hint="People on duty in this queue, with their open tickets.">
+            <Field label="Assign to" hint="Tickets are assigned by workload. Move one to someone else on duty here (never yourself).">
               <Select value={ticket.assigned_to_id ?? ""} disabled={busy || !people}
                 onChange={(e) => run(() => api.post(`/support/tickets/${ticket.id}/assign`, { user_id: e.target.value || null }), "Assignment changed.")}>
                 <option value="">Unassigned</option>
-                {people?.map((p) => <option key={p.user_id} value={p.user_id}>
+                {people?.filter((p) => p.user_id !== me?.id || p.user_id === ticket.assigned_to_id).map((p) => <option key={p.user_id} value={p.user_id}
+                  disabled={p.user_id === me?.id}>
                   {p.name} · {p.open_tickets}/{p.capacity}{p.availability !== "available" ? ` · ${p.availability}` : ""}</option>)}
               </Select>
             </Field>

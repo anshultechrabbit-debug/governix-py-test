@@ -6,7 +6,7 @@ from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from app.modules.categories.model import CategoryType
 from app.modules.policies.schema import VersionRead
-from app.core.inputs import MaybeText, Name, Tag
+from app.core.inputs import AtMost, MaybeText, Name, Tag
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{0,98}[a-z0-9]$"
 
@@ -25,7 +25,7 @@ CategoryName = Annotated[Name, Field(min_length=2, max_length=100), AfterValidat
 class CategoryCreate(BaseModel):
     name: CategoryName
     category_type: CategoryType
-    description: MaybeText = Field(default=None, max_length=2000)
+    description: Annotated[MaybeText, AtMost(2000)] = None
     is_active: bool = True
     # Derived from the name when omitted.
     slug: str | None = Field(default=None, pattern=SLUG_PATTERN)
@@ -37,7 +37,7 @@ class CategoryCreate(BaseModel):
 class CategoryUpdate(BaseModel):
     name: CategoryName | None = None
     category_type: CategoryType | None = None
-    description: MaybeText = Field(default=None, max_length=2000)  # null or blank clears it
+    description: Annotated[MaybeText, AtMost(2000)] = None  # null or blank clears it
     authority_rank: int | None = Field(default=None, ge=0, le=1000)
     keywords: list[Tag] | None = Field(default=None, max_length=100)
     is_active: bool | None = None

@@ -1,8 +1,9 @@
 import uuid
 from datetime import date, datetime
+from typing import Annotated
 
 from pydantic import BaseModel, Field, model_validator
-from app.core.inputs import Line, MaybeLine, MaybeName
+from app.core.inputs import AtMost, Line, MaybeLine, MaybeName
 
 MAX_GROUPS = 200
 MAX_ITEMS = 500
@@ -10,7 +11,7 @@ MAX_ITEMS = 500
 
 class BatchItemIn(BaseModel):
     filename: Line = Field(min_length=1, max_length=500)
-    version_label: MaybeLine = Field(default=None, max_length=50)
+    version_label: Annotated[MaybeLine, AtMost(50)] = None
     # Optional: without it the document's own date, else the arranged order, is used.
     effective_from: date | None = None
 
@@ -19,7 +20,7 @@ class BatchGroupIn(BaseModel):
     """One policy and its versions, oldest first."""
 
     policy_id: uuid.UUID | None = None  # add versions to this existing policy ...
-    new_policy_name: MaybeName = Field(default=None, max_length=500)  # ... or create one (name optional)
+    new_policy_name: Annotated[MaybeName, AtMost(500)] = Field(default=None)  # ... or create one (name optional)
     category_id: uuid.UUID | None = None  # for a new policy; the detected category when omitted
     items: list[BatchItemIn] = Field(min_length=1, max_length=100)
 
