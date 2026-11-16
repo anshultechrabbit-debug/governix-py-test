@@ -380,9 +380,8 @@ Restore: `sudo -u postgres pg_restore --clean -d governix /backup/governix-<date
 
 - [ ] `APP_ENV=production`, `JWT_SECRET` and `MFA_ENCRYPTION_KEY` set, `.env` is `chmod 600`.
 - [ ] HTTPS on the main site (section 10).
-- [ ] **Turn the login lockout back on.** It is switched off in the code for now: in `app/modules/auth/service.py`
-      uncomment the three blocks marked `LOCKOUT DISABLED`, and remove the two `pytest.mark.skip` marks with the
-      same text in the tests. Without it, password guessing at the sign-in page is not slowed down.
+- [ ] Login lockout is on (5 failed passwords or codes lock the account for 15 minutes,
+      `LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCKOUT_MINUTES`); `grep -rn "DISABLED" app/modules/auth` finds nothing.
 - [ ] `CORS_ORIGINS` lists only your own address (the default includes `*`).
 - [ ] SMTP set, so password reset links are emailed.
 - [ ] Every admin account has two-step sign-in set up.

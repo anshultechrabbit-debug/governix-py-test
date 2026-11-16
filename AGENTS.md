@@ -171,6 +171,23 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   overdue ticket.
 - Tests: `app/tests/integration/test_support_center.py`.
 
+## Role dashboards (2026-11-16, `app/modules/dashboard/`, for the admin panel's three dashboards)
+
+- `GET /dashboard/platform` (Master Admin only), `/dashboard/organization` (Org Admin only), `/dashboard/branch`
+  (Branch Manager only); any other role gets 403 `WRONG_DASHBOARD`. `period=7d|30d|90d` sets the activity charts
+  (7 daily points, 4 weekly, 3 monthly; UTC days). `GET /dashboard` (the old shared one) is unchanged.
+- No schema change. Two things the UI shows are not recorded, so they are derived:
+  - "Acknowledged / read" = the User opened one of the policy's documents (`document.accessed`/`document.viewed`)
+    after the assignment was made (`service._opened_since_assigned`). A real "I have read it" would need a column.
+  - Gateway traffic is not recorded; the Master Admin gets each organization's app activity instead (sign-ins, AI
+    questions, documents opened, uploads, from the audit log).
+- Scope: the Master Admin sees counts only, never an organization's documents; its support figures are the
+  Technical Support (platform) queue. The Branch Manager has no audit permission, so its activity feed is built
+  from tickets, documents, assignments and staff of the branch, not from the audit log.
+- Organization status on the platform dashboard: `provisioning` = active but its port is not serving (no port,
+  not deployed or disabled); with `NGINX_CONF_DIR` unset, an organization with a port counts as active.
+- Field-by-field map to the UI: `docs/dashboards-api.md`. Tests: `app/tests/integration/test_role_dashboards.py`.
+
 ## Answer pipeline (`app/modules/rag/service.py`, `RAGService.answer_events`)
 
 1. Standalone rewrite.

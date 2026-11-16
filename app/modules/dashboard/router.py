@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -15,6 +15,8 @@ from app.modules.ai_usage.service import usage_overview
 from app.modules.audit.model import AuditEvent
 from app.modules.auth.dependencies import get_current_principal, require
 from app.modules.auth.permissions import Permission, Principal, Role
+from app.modules.dashboard import service
+from app.modules.dashboard.schema import BranchDashboard, OrganizationDashboard, Period, PlatformDashboard
 from app.modules.documents.model import Document, DocumentStatus
 from app.modules.documents.repository import document_visible
 from app.modules.ingestion.model import Decision, DocumentAnalysis, ReviewStatus
@@ -116,6 +118,60 @@ def dashboard(principal: Reader, db: Annotated[Session, Depends(get_db)]):
         ],
         attention=attention,
     ))
+
+
+def _only(role: Role, page: str):
+    def check(principal: Annotated[Principal, Depends(get_current_principal)]) -> Principal:
+        if principal.role is not role:
+            raise PermissionDeniedError(f"This is the {page} dashboard.", code="WRONG_DASHBOARD")
+        return principal
+    return check
+
+
+Rows = Annotated[int, Query(ge=1, le=50, description="How many rows each list section holds.")]
+Activity = Annotated[int, Query(ge=1, le=50, description="How many entries the activity feed holds.")]
+PeriodQuery = Annotated[Period, Query(description="Activity charts: 7 days (daily), 4 weeks (weekly), 3 months.")]
+
+
+@router.get("/platform", response_model=ApiResponse[PlatformDashboard])
+def platform_dashboard(
+    _principal: Annotated[Principal, Depends(_only(Role.MASTER_ADMIN, "Master Admin"))],
+    db: Annotated[Session, Depends(get_db)],
+    settings=Depends(get_app_settings),
+    period: PeriodQuery = "7d",
+    organizations: Annotated[int, Query(ge=1, le=100, description="Recent organizations listed.")] = 10,
+    audit: Activity = 10,
+):
+    """The Master Admin's dashboard: organizations, users, ports, Technical Support tickets, app activity per
+    organization and the latest audit events. Counts only: never an organization's documents."""
+    return ok(service.platform(db, settings, period=period, organizations_limit=organizations, audit_limit=audit))
+
+
+@router.get("/organization", response_model=ApiResponse[OrganizationDashboard])
+def organization_dashboard(
+    principal: Annotated[Principal, Depends(_only(Role.ORG_ADMIN, "Org Admin"))],
+    db: Annotated[Session, Depends(get_db)],
+    settings=Depends(get_app_settings),
+    period: PeriodQuery = "7d",
+    rows: Rows = 5,
+    activity: Activity = 8,
+):
+    """The Org Admin's dashboard: users, branches and their managers, the library, how far policies reached their
+    Users (opened since assigned), uploads and assignments over time, the latest audit events, the portal's port."""
+    return ok(service.organization(db, settings, principal, period=period, rows=rows, activity=activity))
+
+
+@router.get("/branch", response_model=ApiResponse[BranchDashboard])
+def branch_dashboard(
+    principal: Annotated[Principal, Depends(_only(Role.BRANCH_MANAGER, "Branch Manager"))],
+    db: Annotated[Session, Depends(get_db)],
+    period: PeriodQuery = "7d",
+    rows: Rows = 5,
+    activity: Activity = 8,
+):
+    """The Branch Manager's dashboard: the branch's documents, staff by department, assignments and how many were
+    opened, open tickets, uploads and assignments over time, and what happened in the branch lately."""
+    return ok(service.branch(db, principal, period=period, rows=rows, activity=activity))
 
 
 def _platform_admin(principal: Annotated[Principal, Depends(get_current_principal)]) -> Principal:
