@@ -91,6 +91,8 @@ CREATOR_TRANSITIONS: dict[str, set[str]] = {
     TicketStatus.CLOSED: {TicketStatus.OPEN},
 }
 FINISHED = frozenset({TicketStatus.CLOSED, TicketStatus.CANCELLED})
+# How a move between queues reads (TicketService._how), in the past tense for the timeline and notices.
+MOVED = {"bring": "brought", "escalate": "escalated", "send": "sent", "hand": "handed"}
 # No replies, notes or attachments: finished, or resolved (the creator reopens it, or the team moves it back to
 # in progress, before anyone writes on it again).
 NO_MESSAGES = FINISHED | {TicketStatus.RESOLVED}
@@ -121,6 +123,7 @@ class ForwardedBy:
     reason: str | None
     escalation: bool
     at: datetime
+    how: str = "hand"  # bring / escalate / send / hand (MOVED); older entries: escalate or hand
 
 
 @dataclass
@@ -282,6 +285,8 @@ class TicketService:
                      resource_type="ticket", resource_id=ticket.id,
                      details={"reference": reference(ticket), "to": destination, "recommended": routing.get("team"),
                               "switched": switched})
+        if self._past_empty_branch(ticket):
+            destination["queue"] = queue_name(self.session, ticket.level, ticket.branch_id)
         assignee = self._auto_assign(principal, ticket)
         notify(self.session, [ticket.created_by_id], NotificationType.TICKET_UPDATED,
                f"{reference(ticket)} raised: {ticket.subject}",
@@ -292,6 +297,33 @@ class TicketService:
         return ticket
 
     # --- assignment ------------------------------------------------------------------------------------------
+
+    def _staffed(self, ticket: Ticket, level: str | None = None) -> bool:
+        """Someone other than its creator is on duty in the ticket's queue (or that level's queue)."""
+        level = level or ticket.level
+        return any(uid != ticket.created_by_id for uid in self.session.scalars(
+            queue_staff_query(level, ticket.organization_id, ticket.branch_id).with_only_columns(SupportStaff.user_id)))
+
+    def _past_empty_branch(self, ticket: Ticket) -> bool:
+        """A branch with nobody on support duty sends its tickets on to Head Office Support, recorded on the
+        timeline. A branch whose staff are only busy, away or full keeps them (they wait for its people). True
+        when the ticket moved. The caller holds the ticket's row lock and assigns it after."""
+        if ticket.level != TicketLevel.BRANCH or self._staffed(ticket):
+            return False
+        source = {"level": ticket.level, "team": ticket.team, "queue": queue_name(self.session, ticket.level, ticket.branch_id)}
+        ticket.level, ticket.team = TicketLevel.ORGANIZATION, LEVEL_TEAM[TicketLevel.ORGANIZATION]
+        ticket.assigned_to_id = None
+        destination = {"level": ticket.level, "team": ticket.team,
+                       "queue": queue_name(self.session, ticket.level, ticket.branch_id)}
+        reason = f"{source['queue']} has no one on support duty."
+        self.session.add(TicketMessage(
+            ticket_id=ticket.id, organization_id=ticket.organization_id, author_id=None, kind=MessageKind.FORWARD,
+            body=reason, data={"from": source, "to": destination, "automatic": True, "escalation": False},
+        ))
+        record_event(self.session, "ticket.forwarded", actor=None, organization_id=ticket.organization_id,
+                     resource_type="ticket", resource_id=ticket.id,
+                     details={"reference": reference(ticket), "from": source, "to": destination, "automatic": True})
+        return True
 
     def _auto_assign(self, actor: Principal | None, ticket: Ticket, *,
                      exclude: frozenset[uuid.UUID] = frozenset(), why: str | None = None,
@@ -337,6 +369,9 @@ class TicketService:
                 query = query.where(Ticket.branch_id == branch_id)
         assigned = 0
         for ticket in self.session.scalars(query.order_by(Ticket.created_at).with_for_update(skip_locked=True)):
+            if self._past_empty_branch(ticket):  # nobody on duty in its branch: Head Office takes it
+                assigned += self._auto_assign(actor, ticket) is not None
+                continue
             found = assignment.best(self.session, ticket)
             if found is None:
                 if level == TicketLevel.PLATFORM:
@@ -385,7 +420,7 @@ class TicketService:
         exclude = actor.user_id if actor else None
         if user is not None:
             notify(self.session, [user.id], NotificationType.TICKET_ASSIGNED,
-                   f"{'Forwarded' if forwarded else 'Assigned'} to you: {reference(ticket)} {ticket.subject}",
+                   f"{'Moved' if forwarded else 'Assigned'} to you: {reference(ticket)} {ticket.subject}",
                    organization_id=ticket.organization_id, body=forwarded or why, link=f"/support/{ticket.id}",
                    data={"ticket_id": str(ticket.id)}, exclude=exclude)
         if previous and previous != (user.id if user else None):
@@ -469,13 +504,45 @@ class TicketService:
 
     # --- forward and escalate --------------------------------------------------------------------------------
 
-    def destinations(self, ticket: Ticket) -> list[dict[str, str]]:
+    @staticmethod
+    def _home_level(principal: Principal, duty: Duty) -> str | None:
+        """The queue the caller belongs to: their staff profile's, or the one they run (Org Admin: Head Office)."""
+        if duty.active:
+            return duty.staff.level
+        return {Role.ORG_ADMIN: TicketLevel.ORGANIZATION, Role.BRANCH_MANAGER: TicketLevel.BRANCH,
+                Role.MASTER_ADMIN: TicketLevel.PLATFORM}.get(principal.role)
+
+    def _moves_from_here(self, principal: Principal, duty: Duty, ticket: Ticket) -> bool:
+        """Only a ticket's own queue moves it: its staff, its manager (Branch Manager / Org Admin / Master Admin for
+        their own level) or whoever holds it. The Org Admin oversees branch queues and may work their tickets, but
+        the branch escalates them; he never moves one out of a branch."""
+        return ticket.assigned_to_id == principal.user_id or self._home_level(principal, duty) == ticket.level
+
+    def _how(self, principal: Principal, duty: Duty, ticket: Ticket, level: str) -> str:
+        """How a move reads, for the button, the timeline and the notices:
+        bring     into the caller's own queue (the Org Admin taking a branch ticket into Head Office)
+        escalate  up within the bank (branch -> Head Office)
+        send      to Governix Technical Support
+        hand      down or back to the bank (Head Office -> branch, Technical -> the bank's queues)"""
+        if level == self._home_level(principal, duty):
+            return "bring"
+        if level == TicketLevel.PLATFORM:
+            return "send"
+        if ticket.level == TicketLevel.BRANCH and level == TicketLevel.ORGANIZATION:
+            return "escalate"
+        return "hand"
+
+    def destinations(self, ticket: Ticket, principal: Principal) -> list[dict[str, str]]:
+        duty = self.duty(principal)
         found = []
         for key, level in DESTINATIONS.items():
             if level == ticket.level or (level == TicketLevel.BRANCH and ticket.branch_id is None):
                 continue
+            if level == TicketLevel.BRANCH and not self._staffed(ticket, level):
+                continue  # nobody on duty there: it would come straight back to Head Office
             found.append({"key": key, "level": level, "team": LEVEL_TEAM[level],
-                          "label": queue_name(self.session, level, ticket.branch_id)})
+                          "label": queue_name(self.session, level, ticket.branch_id),
+                          "how": self._how(principal, duty, ticket, level)})
         return found
 
     def forward(self, principal: Principal, ticket_id: uuid.UUID, *, to: str, reason: str, confirmed: bool,
@@ -497,6 +564,10 @@ class TicketService:
                 raise PermissionDeniedError("You can escalate your ticket once it is overdue.")
         elif not handler:
             raise PermissionDeniedError("Only the team handling this ticket can forward it.")
+        elif not self._moves_from_here(principal, duty, ticket):
+            raise PermissionDeniedError(
+                f"You oversee {queue_name(self.session, ticket.level, ticket.branch_id)}: work the ticket there, and "
+                "its own team escalates it when it needs to move.", code="OVERSIGHT_ONLY")
         level = ESCALATES_TO.get(ticket.level) if escalation else DESTINATIONS.get(to)
         if level is None:
             raise ValidationError("This ticket cannot go further up." if escalation else "Unknown destination.",
@@ -506,7 +577,11 @@ class TicketService:
         reason = " ".join(reason.split())
         if len(reason) < 3:
             raise ValidationError("Give a reason for forwarding.", code="REASON_REQUIRED")
+        if level == TicketLevel.BRANCH and not self._staffed(ticket, level):
+            raise ValidationError(f"{queue_name(self.session, level, ticket.branch_id)} has no one on support duty: "
+                                  "add staff there first.", code="QUEUE_UNSTAFFED")
 
+        how = "escalate" if escalation else self._how(principal, duty, ticket, level)
         source = {"level": ticket.level, "team": ticket.team, "queue": queue_name(self.session, ticket.level, ticket.branch_id),
                   "assigned_to": str(ticket.assigned_to_id) if ticket.assigned_to_id else None}
         previous_assignee = ticket.assigned_to_id
@@ -517,7 +592,8 @@ class TicketService:
         self.session.add(TicketMessage(
             ticket_id=ticket.id, organization_id=ticket.organization_id, author_id=principal.user_id,
             kind=MessageKind.FORWARD, body=reason,
-            data={"from": source, "to": destination, "confirmed": True, "escalation": escalation, "by_creator": by_creator},
+            data={"from": source, "to": destination, "confirmed": True, "escalation": escalation, "by_creator": by_creator,
+                  "how": how},
         ))
         record_event(self.session, "ticket.escalated" if escalation else "ticket.forwarded", actor=principal,
                      organization_id=ticket.organization_id, resource_type="ticket", resource_id=ticket.id,
@@ -525,7 +601,7 @@ class TicketService:
         exclude = principal.user_id
         if previous_assignee:
             notify(self.session, [previous_assignee], NotificationType.TICKET_FORWARDED,
-                   f"Forwarded: {reference(ticket)} {ticket.subject}", body=f"Now with {destination['queue']}: {reason}",
+                   f"Moved: {reference(ticket)} {ticket.subject}", body=f"Now with {destination['queue']}: {reason}",
                    organization_id=ticket.organization_id, link=f"/support/{ticket.id}",
                    data={"ticket_id": str(ticket.id)}, exclude=exclude)
         notify(self.session, [ticket.created_by_id], NotificationType.TICKET_FORWARDED,
@@ -534,8 +610,8 @@ class TicketService:
                data={"ticket_id": str(ticket.id)}, exclude=exclude)
         # The new assignee is told who sent it, from where and why, so they can answer accordingly.
         sender = self.session.get(User, principal.user_id)
-        notice = (f"{sender.full_name if sender else 'Someone'} {'escalated' if escalation else 'forwarded'} it "
-                  f"from {source['queue']}: {reason}")
+        notice = (f"{sender.full_name if sender else 'Someone'} {MOVED[how]} it from {source['queue']} to "
+                  f"{destination['queue']}: {reason}")
         if user_id is not None:
             if user_id not in self._queue_member_ids(ticket) or user_id in (ticket.created_by_id, principal.user_id):
                 raise ValidationError("That person is not on duty in that queue.", code="NOT_IN_QUEUE")
@@ -629,7 +705,17 @@ class TicketService:
             allowed |= HANDLER_TRANSITIONS.get(ticket.status, set())
         if ticket.created_by_id == principal.user_id:
             allowed |= CREATOR_TRANSITIONS.get(ticket.status, set())
+            if ticket.status == TicketStatus.CANCELLED and self._withdrawn_by_creator(ticket):
+                allowed.add(TicketStatus.OPEN)  # they may bring back what they withdrew (not what a manager cancelled)
         return sorted(allowed)
+
+    def _withdrawn_by_creator(self, ticket: Ticket) -> bool:
+        """Cancelled by the person who raised it (withdrawn), not by a queue's manager."""
+        by = self.session.scalar(
+            select(TicketMessage.author_id).where(TicketMessage.ticket_id == ticket.id,
+                                                  TicketMessage.status_change == TicketStatus.CANCELLED)
+            .order_by(TicketMessage.created_at.desc()).limit(1))
+        return by is not None and by == ticket.created_by_id
 
     def change_status(self, principal: Principal, ticket_id: uuid.UUID, status: TicketStatus, note: str | None) -> Ticket:
         ticket = self._locked(principal, ticket_id)
@@ -642,8 +728,21 @@ class TicketService:
             if not note or len(note) < 3:
                 raise ValidationError("Write a resolution note.", code="RESOLUTION_NOTE_REQUIRED")
             ticket.resolution_note = note
-        reopening = status == TicketStatus.OPEN and ticket.status in (TicketStatus.RESOLVED, TicketStatus.CLOSED)
+        if ticket.status == TicketStatus.CANCELLED and ticket.confirmed_at is None:
+            # A withdrawn draft comes back as a draft: the creator confirms where it goes again.
+            self._set_status(principal, ticket, TicketStatus.AWAITING_CONFIRMATION, note=note)
+            ticket.cancelled_at = None
+            record_event(self.session, "ticket.reopened", actor=principal, organization_id=ticket.organization_id,
+                         resource_type="ticket", resource_id=ticket.id, details={"reference": reference(ticket)})
+            self.session.commit()
+            return ticket
+        withdrawn = ticket.status == TicketStatus.CANCELLED
+        reopening = status == TicketStatus.OPEN and ticket.status in (
+            TicketStatus.RESOLVED, TicketStatus.CLOSED, TicketStatus.CANCELLED)
         self._set_status(principal, ticket, status, note=note)
+        if withdrawn:
+            ticket.cancelled_at = None
+            sla.restart(self.settings, ticket)  # its old due times ran while it was withdrawn
         recipients = {ticket.created_by_id}
         if reopening:
             ticket.reopen_count += 1
@@ -654,6 +753,7 @@ class TicketService:
                          resource_type="ticket", resource_id=ticket.id, details={"reference": reference(ticket)})
             # Back to whoever had it, if they are still on duty in its queue; otherwise by workload.
             if ticket.assigned_to_id not in self._queue_member_ids(ticket):
+                self._past_empty_branch(ticket)
                 self._auto_assign(principal, ticket, why="Reopened.")
         if ticket.assigned_to_id:
             recipients.add(ticket.assigned_to_id)
@@ -914,7 +1014,7 @@ class TicketService:
                                           order_by=(TicketMessage.created_at.desc(), TicketMessage.id.desc())).label("n"))
             .outerjoin(author, author.id == TicketMessage.author_id)
             .where(TicketMessage.ticket_id.in_([t.id for t in tickets]), TicketMessage.kind == MessageKind.FORWARD,
-                   not_(TicketMessage.data.has_key("initial")))
+                   not_(TicketMessage.data.has_key("initial")), not_(TicketMessage.data.has_key("automatic")))
             .subquery()
         )
         found = {}
@@ -924,6 +1024,7 @@ class TicketService:
                 by_id=row.author_id, by_name=row.name, by_role=row.role,
                 from_queue=(data.get("from") or {}).get("queue"), to_queue=(data.get("to") or {}).get("queue"),
                 reason=row.body, escalation=bool(data.get("escalation")), at=row.created_at,
+                how=data.get("how") or ("escalate" if data.get("escalation") else "hand"),
             )
         return found
 
@@ -937,14 +1038,21 @@ class TicketService:
         draft = ticket.status == TicketStatus.AWAITING_CONFIRMATION
         next_level = ESCALATES_TO.get(TicketLevel(ticket.level))
         writable = not draft and ticket.status not in NO_MESSAGES and not read_only
+        # Only the ticket's own queue moves it (an overseeing Org Admin works a branch ticket but does not move it).
+        moves = handler and active and self._moves_from_here(principal, duty, ticket)
+        forward = self.destinations(ticket, principal) if moves else []
+        # "Escalate" is one level up. The handling team already has that queue among its forward buttons, so it is
+        # offered only where it adds a way out: the creator of an overdue ticket.
+        escalate = bool(next_level) and active and (
+            (moves and next_level not in {d["level"] for d in forward}) or (creator and sla.is_overdue(ticket)))
         return {
             "confirm": creator and draft,
             "reply": writable,
             "note": writable and reads_notes_of(principal, duty, ticket, ticket.level),
             "statuses": self.allowed_statuses(principal, ticket),
             "cancel": (creator and (draft or active)) or (manager and active),
-            "forward": self.destinations(ticket) if handler and active else [],
-            "escalate": bool(next_level) and active and (handler or (creator and sla.is_overdue(ticket))),
+            "forward": forward,
+            "escalate": escalate,
             "escalate_to": queue_name(self.session, next_level, ticket.branch_id) if next_level else None,
             "assign": manager and active,
             "priority": handler and not draft and ticket.status not in FINISHED,

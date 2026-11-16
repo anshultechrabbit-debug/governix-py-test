@@ -74,13 +74,11 @@ class AuthService:
         )
         now = datetime.now(UTC)
 
-        # LOCKOUT DISABLED (2026-11-05, for now): the temporary lock after repeated failed logins is switched off.
-        # To turn it back on, uncomment the three "LOCKOUT DISABLED" blocks in this file and the two skipped tests.
-        # if user is not None and user.locked_until and user.locked_until > now:
-        #     verify_password(password, None)  # keep timing uniform
-        #     raise AuthenticationError(
-        #         "Account temporarily locked after repeated failed logins.", code="ACCOUNT_LOCKED"
-        #     )
+        if user is not None and user.locked_until and user.locked_until > now:
+            verify_password(password, None)  # keep timing uniform
+            raise AuthenticationError(
+                "Account temporarily locked after repeated failed logins.", code="ACCOUNT_LOCKED"
+            )
 
         if not verify_password(password, user.password_hash if user else None):
             if user is not None:
@@ -120,9 +118,8 @@ class AuthService:
             raise AuthenticationError(MFA_STEP_EXPIRED, code="MFA_CHALLENGE_EXPIRED")
         if not user.is_active:
             raise account_suspended(user)
-        # LOCKOUT DISABLED (for now), see login().
-        # if user.locked_until and user.locked_until > now:
-        #     raise AuthenticationError("Account temporarily locked after repeated failed logins.", code="ACCOUNT_LOCKED")
+        if user.locked_until and user.locked_until > now:
+            raise AuthenticationError("Account temporarily locked after repeated failed logins.", code="ACCOUNT_LOCKED")
         if user.organization_id is not None and not _is_active(self.session.get(Organization, user.organization_id)):
             raise AuthenticationError(ORGANIZATION_SUSPENDED, code="ORGANIZATION_SUSPENDED")
         used = self._accept_code(user, code, now)
@@ -432,12 +429,10 @@ class AuthService:
         return pair, stored.id
 
     def _register_failure(self, user: User, now: datetime, *, mfa: bool = False) -> None:
-        # Failures are still counted and audited; only the lock is off.
         user.failed_login_attempts += 1
-        # LOCKOUT DISABLED (for now), see login().
-        # if user.failed_login_attempts >= self.settings.LOGIN_MAX_FAILED_ATTEMPTS:
-        #     user.locked_until = now + timedelta(minutes=self.settings.LOGIN_LOCKOUT_MINUTES)
-        #     user.failed_login_attempts = 0
+        if user.failed_login_attempts >= self.settings.LOGIN_MAX_FAILED_ATTEMPTS:
+            user.locked_until = now + timedelta(minutes=self.settings.LOGIN_LOCKOUT_MINUTES)
+            user.failed_login_attempts = 0
         record_event(
             self.session,
             "auth.login_failed",

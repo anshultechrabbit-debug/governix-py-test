@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Headset, Pencil, Plus, Shuffle, Tags, Trash2, UserPlus } from "lucide-react";
+import { Copy, Headset, KeyRound, Pencil, Plus, Shuffle, Tags, Trash2, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, ApiError, qs } from "../api/client";
 import type {
@@ -37,6 +37,7 @@ export function SupportStaffPage() {
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<SupportStaff | null>(null);
+  const [resetting, setResetting] = useState<SupportStaff | null>(null);
   const toast = useToast();
   const queryClient = useQueryClient();
   const { data, error, isLoading, refetch } = useQuery({
@@ -109,6 +110,8 @@ export function SupportStaffPage() {
                       <Badge tone={tone}>{label}</Badge>
                       <Menu items={[
                         { label: "Edit", icon: <Pencil className="size-4" />, onSelect: () => setEditing(s) },
+                        // Staff accounts only; a profile on an ordinary user is reset from Users.
+                        s.role === "support_agent" && { label: "Reset password", icon: <KeyRound className="size-4" />, onSelect: () => setResetting(s) },
                         s.open_tickets > 0 && { label: `Reassign ${s.open_tickets} open ticket${s.open_tickets === 1 ? "" : "s"}`, icon: <Shuffle className="size-4" />,
                           onSelect: () => act(async () => {
                             const { moved } = await api.post<{ moved: number }>(`/support/staff/${s.id}/reassign`, {});
@@ -132,6 +135,7 @@ export function SupportStaffPage() {
       )}
       <AddStaffModal open={adding} onClose={() => setAdding(false)} levels={levels} />
       <EditStaffModal staff={editing} onClose={() => setEditing(null)} />
+      <ResetPasswordModal staff={resetting} onClose={() => setResetting(null)} />
     </>
   );
 }
@@ -277,6 +281,55 @@ function AddStaffModal({ open, onClose, levels }: { open: boolean; onClose: () =
             <Field label="Phone"><Input value={account.phone} onChange={(e) => setAccount({ ...account, phone: e.target.value })} /></Field>
           </div>
           <DutyFields form={duty} set={(patch) => setDuty({ ...duty, ...patch })} platform={platform} />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** A new temporary password for a staff account, shown once; they are signed out everywhere. */
+function ResetPasswordModal({ staff, onClose }: { staff: SupportStaff | null; onClose: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [password, setPassword] = useState<string | null>(null);
+  useEffect(() => { setError(null); setPassword(null); }, [staff]);
+  if (!staff) return null;
+
+  async function reset() {
+    if (!staff) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await api.post<{ temporary_password: string }>(`/support/staff/${staff.id}/reset-password`, {});
+      setPassword(result.temporary_password);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Could not reset the password.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} icon={<KeyRound className="size-5" />}
+      title={password ? "Password reset" : `Reset password for ${staff.full_name}?`}
+      description={password ? "Copy it now. It isn't stored and won't be shown again." : undefined}
+      footer={password ? <Button onClick={onClose}>Done</Button> : <>
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button loading={busy} onClick={reset}>Generate new password</Button>
+      </>}>
+      {password ? (
+        <div className="space-y-3 text-sm">
+          <p><span className="font-medium">{staff.full_name}</span> ({staff.email}) signs in with this temporary password and can change it after.</p>
+          <div className="flex items-center gap-2 rounded-md bg-subtle px-3 py-2 font-mono">
+            <span className="flex-1 break-all">{password}</span>
+            <Button size="sm" variant="ghost" onClick={() => { void copyText(password); toast("ok", "Copied."); }}><Copy className="size-4" /></Button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-3 text-sm text-ink-soft">
+          <p>A new temporary password is generated and shown to you once. {staff.full_name} is signed out everywhere and must use it to sign in.</p>
+          {error && <p className="rounded-md bg-bad-50 px-3 py-2 text-bad-600" role="alert">{error}</p>}
         </div>
       )}
     </Modal>

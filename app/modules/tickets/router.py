@@ -115,6 +115,9 @@ class ForwardedByRead(BaseModel):
     reason: str | None
     escalation: bool
     at: datetime
+    how: Literal["bring", "escalate", "send", "hand"] = Field(
+        description="How it moved: brought into the mover's own queue, escalated up, sent to Technical Support, "
+                    "or handed down/back to the bank.")
 
 
 class TicketRead(BaseModel):
@@ -191,6 +194,9 @@ class Destination(BaseModel):
     level: TicketLevel
     team: TicketTeam
     label: str
+    how: Literal["bring", "escalate", "send", "hand"] = Field(
+        description="bring: into the caller's own queue (Org Admin -> Head Office); escalate: branch -> Head Office; "
+                    "send: to Technical Support; hand: down or back to the bank.")
 
 
 class TicketActions(BaseModel):
@@ -394,7 +400,8 @@ def reply(ticket_id: uuid.UUID, body: Reply, principal: Supporter, service: Serv
 @router.post("/tickets/{ticket_id}/status", response_model=ApiResponse[TicketDetail], responses=_errors(403, 404, 422))
 def change_status(ticket_id: uuid.UUID, body: StatusChange, principal: Supporter, service: Service):
     """Staff: open -> in_progress / waiting_for_user / waiting_for_team -> resolved (with a note), resolved ->
-    in_progress. Creator: resolved -> closed (accept) or open (reopen), closed -> open."""
+    in_progress. Creator: reopen (open) a resolved or closed ticket, or one they withdrew themselves (a withdrawn
+    draft returns to awaiting_confirmation; a sent one reopens with fresh due times). Not one a manager cancelled."""
     service.change_status(principal, ticket_id, body.status, body.note)
     return ok(_detail(service, principal, ticket_id))
 
@@ -630,6 +637,18 @@ def remove_staff(staff_id: uuid.UUID, principal: StaffManager, staff: StaffServi
     """Take someone off support duty and close their staff account. Refused while they hold open tickets."""
     staff.remove(principal, staff_id)
     return ok({"removed": True})
+
+
+class StaffPassword(BaseModel):
+    temporary_password: str
+
+
+@staff_router.post("/{staff_id}/reset-password", response_model=ApiResponse[StaffPassword], responses=_errors(403, 404, 422))
+def reset_staff_password(staff_id: uuid.UUID, principal: StaffManager, staff: StaffServiceDep, confirm_code: StepUp):
+    """A new temporary password for a support staff account (returned once); they are signed out everywhere.
+    The managers who see the profile may do it. Needs an authenticator code, like any password reset."""
+    confirm_code("user.password_reset")
+    return ok(StaffPassword(temporary_password=staff.reset_password(principal, staff_id)))
 
 
 @staff_router.post("/{staff_id}/reassign", response_model=ApiResponse[Reassigned], responses=_errors(403, 404))

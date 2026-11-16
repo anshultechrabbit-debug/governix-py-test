@@ -61,8 +61,8 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   - Login with it on answers `mfa_required: true` and sets only the HttpOnly `governix_mfa` challenge cookie
     (`MFA_CHALLENGE_MINUTES`, bound to `token_version`); `/auth/mfa/verify` takes the app code or a backup code and
     issues the session. Wrong codes count as failed logins; `/auth/mfa/*` is also rate-limited.
-  - **Login lockout is DISABLED for now (2026-11-05, user's request)**: the lock checks and the lock itself are commented
-    out in `auth/service.py` (search "LOCKOUT DISABLED"); failures are still counted and audited. Two tests are skipped.
+  - Login lockout (re-enabled 2026-11-16): `LOGIN_MAX_FAILED_ATTEMPTS` (5) failed passwords or codes lock the account
+    for `LOGIN_LOCKOUT_MINUTES` (15), `ACCOUNT_LOCKED`; checked at the password step and at `/auth/mfa/verify`.
   - 10 backup codes (`mfa_recovery_codes`, SHA-256), shown once at setup or renewal. They only sign in: turning it
     off needs the password plus an app code (never a backup code).
   - Security alerts (`auth/alerts.py`, notification `SECURITY_ALERT`): set up, turned off, reset, backup code used ->
@@ -110,7 +110,9 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   permission. Governix's have no organization; a bank's are in that bank (Head Office) or bank + branch (Branch
   Support): `users.role_scope` allows it (migration `7d1e4a2c9b58`). `new_account` is required at every level:
   nobody, platform included, puts an existing account on duty (no `user_id`, no `/support/staff/candidates`).
-  Removing a bank staff member also soft-deletes the account.
+  Removing a bank staff member also soft-deletes the account. Their managers reset a staff account's password from
+  the Support Staff page (`POST /support/staff/{id}/reset-password`, temporary password shown once, signed out
+  everywhere); ordinary users' passwords are reset from Users, by the person who manages them.
   Its role, bank and branch never change through `/users` (`SUPPORT_STAFF_ACCOUNT`); its security alerts go to
   the branch's Branch Manager and the Org Admins. Profiles put on ordinary users before this still work. Managers: Branch Manager, Org Admin
   (Head Office and oversight of every branch), Master Admin; a `lead` profile also manages its queue.
@@ -127,6 +129,18 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   then user id; queue profile rows locked `FOR UPDATE` in id order. Nobody eligible -> unassigned and the
   managers are notified. Availability/deactivation never moves tickets; `/support/staff/{id}/reassign` does,
   recorded and notified.
+- **A branch with nobody on duty sends tickets to Head Office (2026-11-16)**: no active profile in the branch queue
+  (other than the creator; away/busy/full still count as staffed) -> on confirm, reopen or while waiting
+  (`assign_waiting`), the ticket moves to Head Office Support (`_past_empty_branch`, an automatic forward entry, no
+  "forwarded by" banner) and is assigned there. Forwarding to such a branch is refused (`QUEUE_UNSTAFFED`) and not
+  offered. Tests that need tickets to stay in a staffless branch use the `staffed` fixture (an away member).
+- **Only a ticket's own queue moves it (2026-11-16)** (`TicketService._moves_from_here`): its staff, the manager of
+  that level (`_home_level`: staff profile, else Org Admin = Head Office, Branch Manager = branch, Master Admin =
+  platform), or its assignee. The Org Admin oversees branch queues: he works a branch ticket (reply, status,
+  priority, assign, cancel) but has no "Move this ticket" and `/forward` is 403 `OVERSIGHT_ONLY`; the branch
+  escalates it. Each destination carries `how` (`_how`): `escalate` branch -> Head Office, `send` to Technical
+  Support, `hand` down/back to the bank (`bring`, into the mover's own queue, is no longer reachable from oversight).
+  The forward entry stores it (`data.how`); buttons, dialog, timeline, banner and the "Moved to you" notice use it.
 - **Never by hand for oneself (2026-11-16)**: there is no "take"; `/assign` to yourself is 403 `SELF_ASSIGN` (a
   manager or lead may still move a ticket to someone else in the queue). Waiting (unassigned) tickets go out by
   workload, oldest first, whenever room may appear (`TicketService.assign_waiting`): staff added, updated or back
@@ -142,6 +156,11 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   (`queues.can_handle`, `handling_clause`; assignment already skipped them; a manager assigning it to them gets
   `ASSIGNEE_IS_CREATOR`). The creator's only status change is Reopen, on a resolved or closed ticket
   (`CREATOR_TRANSITIONS`); "Accept and close" is gone, resolved tickets auto-close (`SUPPORT_AUTO_CLOSE_DAYS`).
+- **Withdrawn tickets (2026-11-16)**: "My tickets" lists every status by default (filters: Resolved, Closed, Withdrawn
+  or cancelled). The creator may reopen a ticket they withdrew themselves (`_withdrawn_by_creator`: the last
+  cancelled status entry is theirs), never one a manager cancelled. A withdrawn draft returns to
+  `awaiting_confirmation`; a sent one reopens (`reopen_count`+1) with fresh due times (`sla.restart`) and is
+  assigned like any reopen.
 - **No messages on a resolved ticket** (`NO_MESSAGES` = resolved, closed, cancelled): reply, internal note and attach
   are refused (409 `INVALID_STATE`) and hidden. The creator reopens it, or the team moves it back to in progress.
 - **Timeline** is `ticket_messages` with `kind` reply/note/status/forward/assign. Internal notes carry the level

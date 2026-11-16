@@ -1,10 +1,10 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpCircle, Download, Eye, Forward, Lock, Paperclip, Send } from "lucide-react";
+import { ArrowDownCircle, ArrowLeft, ArrowUpCircle, Download, Eye, Forward, Lock, LogIn, Paperclip, Send } from "lucide-react";
 import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { api, ApiError } from "../api/client";
 import type {
-  DestinationKey, ForwardResult, QueueAssignee, TicketDetail, TicketPriority, TicketStatus, TimelineEntry,
+  DestinationKey, ForwardResult, MoveHow, QueueAssignee, TicketDetail, TicketPriority, TicketStatus, TimelineEntry,
 } from "../api/types";
 import {
   ACTIVE, PRIORITIES, PRIORITY_TONE, RoutingPanel, SlaBadge, statusLabel, TEAM_LABEL, TicketStatusBadge,
@@ -113,7 +113,7 @@ export function TicketPage() {
         <Card className="mb-5 flex items-start gap-3 p-4 sm:p-5">
           <Eye className="mt-0.5 size-4 shrink-0 text-muted" />
           <p className="text-sm text-ink-soft">
-            You forwarded this ticket. It is now with <span className="font-medium text-ink">{ticket.queue_name}</span>
+            You moved this ticket. It is now with <span className="font-medium text-ink">{ticket.queue_name}</span>
             {ticket.assigned_to_name ? <> ({ticket.assigned_to_name})</> : null}. You can follow its progress here, but only that team
             replies or acts on it now.
           </p>
@@ -123,9 +123,9 @@ export function TicketPage() {
       {forwardedIn && (
         <Card className="mb-5 border-brand-500/30 bg-brand-50 p-4 sm:p-5">
           <p className="flex flex-wrap items-center gap-1.5 text-sm">
-            {forwardedIn.escalation ? <ArrowUpCircle className="size-4 text-brand-700" /> : <Forward className="size-4 text-brand-700" />}
+            <MoveIcon how={forwardedIn.how} className="size-4 text-brand-700" />
             <span>
-              {forwardedIn.escalation ? "Escalated" : "Forwarded"} to {ticket.assigned_to_id === me?.id ? "you" : "this queue"} by{" "}
+              {capitalize(MOVE[forwardedIn.how].past)} to {ticket.assigned_to_id === me?.id ? "you" : "this queue"} by{" "}
               <span className="font-medium">{forwardedIn.by_name ?? "a former staff member"}</span>
               {forwardedIn.by_role ? ` (${ROLE[forwardedIn.by_role] ?? forwardedIn.by_role})` : ""}
               {forwardedIn.from_queue ? <> from <span className="font-medium">{forwardedIn.from_queue}</span></> : null}
@@ -135,7 +135,7 @@ export function TicketPage() {
           {forwardedIn.reason && <p className="mt-2 whitespace-pre-wrap text-sm italic text-ink-soft">“{forwardedIn.reason}”</p>}
           <p className="mt-2 text-xs text-muted">
             Your reply goes to {ticket.created_by_name ?? "the requester"}.
-            {forwardedIn.by_id !== ticket.created_by_id && ` ${forwardedIn.by_name ?? "The person who forwarded it"} follows the ticket and sees your reply, but no longer replies on it.`}
+            {forwardedIn.by_id !== ticket.created_by_id && ` ${forwardedIn.by_name ?? "The person who moved it"} follows the ticket and sees your reply, but no longer replies on it.`}
           </p>
         </Card>
       )}
@@ -173,7 +173,7 @@ export function TicketPage() {
                 </div>
               </div>
             ) : !a.confirm && <p className="border-t border-line px-4 py-3 text-sm text-muted sm:px-5">
-              {ticket.read_only && ticket.status !== "closed" && ticket.status !== "cancelled" ? `Read only: you forwarded this ticket to ${ticket.queue_name}.`
+              {ticket.read_only && ticket.status !== "closed" && ticket.status !== "cancelled" ? `Read only: you moved this ticket to ${ticket.queue_name}.`
                 : ticket.status === "cancelled" ? "This ticket was cancelled."
                 : ticket.status === "resolved" ? "This ticket is resolved." : "This ticket is closed."}
               {mine && a.statuses.includes("open") && " Reopen it to reply."}
@@ -268,8 +268,9 @@ function Entry({ entry: e, me, staffSide }: { entry: TimelineEntry; me?: string;
   const d = e.data ?? {};
   if (e.kind === "forward") {
     const to = d.to?.queue ?? "another team";
-    if (d.initial) text = `${who} sent it to ${to}${d.switched && d.recommended ? ` (chose this over the recommended ${TEAM_LABEL[d.recommended as "technical" | "branch"]})` : ""}`;
-    else text = `${who} ${d.escalation ? "escalated" : "forwarded"} it from ${d.from?.queue ?? "?"} to ${to}`;
+    if (d.automatic) text = `${d.from?.queue ?? "The branch"} has no one on support duty: sent on to ${to}`;
+    else if (d.initial) text = `${who} sent it to ${to}${d.switched && d.recommended ? ` (chose this over the recommended ${TEAM_LABEL[d.recommended as "technical" | "branch"]})` : ""}`;
+    else text = `${who} ${MOVE[(d.how ?? (d.escalation ? "escalate" : "hand")) as MoveHow].past} it from ${d.from?.queue ?? "?"} to ${to}`;
   } else if (e.kind === "assign") {
     if (d.unassigned) text = "No one was available: waiting in the queue, its managers were told";
     else if (!d.to) text = `${who} unassigned it`;
@@ -349,12 +350,17 @@ function StaffActions({ ticket, busy, run, onForward }: {
         </Card>
       )}
 
+      {a.forward.length === 0 && !a.escalate && me?.role === "org_admin" && ticket.level === "branch" && ACTIVE.includes(ticket.status) && (
+        <Card className="p-4 text-xs text-muted">
+          You oversee {ticket.queue_name}: you can work this ticket here, and the branch escalates it to Head Office when needed.
+        </Card>
+      )}
       {(a.forward.length > 0 || a.escalate) && (
         <Card className="space-y-2 p-4">
-          <p className="text-sm font-semibold">Forward</p>
+          <p className="text-sm font-semibold">Move this ticket</p>
           {a.forward.map((d) => (
             <Button key={d.key} variant="secondary" size="sm" className="w-full justify-start" onClick={() => onForward(d.key)}>
-              <Forward className="size-4" />To {d.label}</Button>
+              <MoveIcon how={d.how} className="size-4" />{MOVE[d.how].to} {d.label}</Button>
           ))}
           {a.escalate && a.escalate_to && <Button variant="secondary" size="sm" className="w-full justify-start" onClick={() => onForward("escalate")}>
             <ArrowUpCircle className="size-4" />Escalate to {a.escalate_to}</Button>}
@@ -374,7 +380,23 @@ function StaffActions({ ticket, busy, run, onForward }: {
   );
 }
 
-/** Forwarding needs a reason and an explicit confirmation; the person may also pick who gets it. */
+/** The words for each way a ticket moves between queues (the server decides which applies: Destination.how). */
+const MOVE: Record<MoveHow, { verb: string; to: string; past: string }> = {
+  bring: { verb: "Bring in", to: "Bring into", past: "brought" },       // into the mover's own queue (Org Admin -> Head Office)
+  escalate: { verb: "Escalate", to: "Escalate to", past: "escalated" }, // up the bank (branch -> Head Office)
+  send: { verb: "Send", to: "Send to", past: "sent" },                 // to Governix Technical Support
+  hand: { verb: "Hand over", to: "Hand to", past: "handed" },          // down or back to the bank
+};
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+
+function MoveIcon({ how, className }: { how: MoveHow; className?: string }) {
+  if (how === "escalate") return <ArrowUpCircle className={className} />;
+  if (how === "bring") return <LogIn className={className} />;
+  if (how === "hand") return <ArrowDownCircle className={className} />;
+  return <Forward className={className} />;
+}
+
+/** Moving a ticket needs a reason and an explicit confirmation; the person may also pick who gets it. */
 function ForwardModal({ ticket, to, onClose, onDone }: {
   ticket: TicketDetail; to: DestinationKey | "escalate" | null; onClose: () => void; onDone: (result: ForwardResult) => void;
 }) {
@@ -385,6 +407,7 @@ function ForwardModal({ ticket, to, onClose, onDone }: {
   const [busy, setBusy] = useState(false);
   const destination = to === "escalate" ? null : ticket.actions.forward.find((d) => d.key === to);
   const label = to === "escalate" ? ticket.actions.escalate_to ?? "the next level" : destination?.label ?? "";
+  const how: MoveHow = to === "escalate" ? "escalate" : destination?.how ?? "hand";
   const { data: people } = useQuery({
     queryKey: ["support", "assignees", ticket.id, to],
     queryFn: () => api.get<QueueAssignee[]>(`/support/tickets/${ticket.id}/assignees?to=${to}`),
@@ -403,19 +426,19 @@ function ForwardModal({ ticket, to, onClose, onDone }: {
       setReason(""); setConfirmed(false); setUserId("");
       onDone(result);
     } catch (err) {
-      toast("bad", err instanceof ApiError ? err.message : "Could not forward the ticket.");
+      toast("bad", err instanceof ApiError ? err.message : "Could not move the ticket.");
     } finally {
       setBusy(false);
     }
   }
   return (
-    <Modal open={to !== null} onClose={close} icon={to === "escalate" ? <ArrowUpCircle className="size-5" /> : <Forward className="size-5" />}
-      title={to === "escalate" ? `Escalate ${ticket.reference}` : `Forward ${ticket.reference}`}
+    <Modal open={to !== null} onClose={close} icon={<MoveIcon how={how} className="size-5" />}
+      title={`${MOVE[how].verb} ${ticket.reference}`}
       description={`From ${ticket.queue_name} to ${label}. The history and SLA stay with it.`}
       footer={<>
         <Button variant="secondary" onClick={close}>Cancel</Button>
         <Button disabled={!confirmed || reason.trim().length < 3} loading={busy} onClick={submit}>
-          {to === "escalate" ? <ArrowUpCircle className="size-4" /> : <Forward className="size-4" />}{to === "escalate" ? "Escalate" : "Forward"}</Button>
+          <MoveIcon how={how} className="size-4" />{MOVE[how].verb}</Button>
       </>}>
       <div className="space-y-4">
         <Field label="Reason *" hint="Recorded on the ticket and sent to the requester and the new team.">

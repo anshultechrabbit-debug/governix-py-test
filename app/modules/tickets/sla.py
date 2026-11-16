@@ -32,6 +32,14 @@ def set_due(settings: Settings, ticket: Ticket) -> None:
     ticket.due_at = start + timedelta(hours=resolution)
 
 
+def restart(settings: Settings, ticket: Ticket) -> None:
+    """Due times counted again from now: a withdrawn ticket brought back starts a fresh clock."""
+    now = datetime.now(UTC)
+    response, resolution = hours_for(settings, ticket.priority)
+    ticket.response_due_at = now + timedelta(hours=response)
+    ticket.due_at = now + timedelta(hours=resolution)
+
+
 def is_overdue(ticket: Ticket, now: datetime | None = None) -> bool:
     now = now or datetime.now(UTC)
     return ticket.status in ACTIVE_STATUSES and ticket.due_at is not None and ticket.due_at <= now

@@ -653,7 +653,11 @@ export interface Routing {
   suggested_assignee: { id: UUID; name: string } | null;
 }
 
+/** How a ticket moves between queues: into the mover's own queue, up the bank, to Technical Support, or down/back. */
+export type MoveHow = "bring" | "escalate" | "send" | "hand";
+
 export interface ForwardedBy {
+  how: MoveHow;
   by_id: UUID | null;
   by_name: string | null;
   by_role: Me["role"] | null;
@@ -731,7 +735,7 @@ export interface TimelineEntry {
 
 export interface TicketAttachment { id: UUID; filename: string; content_type: string; size_bytes: number; uploaded_by_id: UUID | null; created_at: string }
 
-export interface Destination { key: DestinationKey; level: TicketLevel; team: TicketTeam; label: string }
+export interface Destination { key: DestinationKey; level: TicketLevel; team: TicketTeam; label: string; how: MoveHow }
 
 /** What the caller may do now (the server checks the same rules). */
 export interface TicketActions {

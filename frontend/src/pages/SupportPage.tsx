@@ -44,7 +44,9 @@ export function SupportPage() {
   const tabs = useMemo(() => boxesFor(role, onDuty), [role, onDuty]);
   const [box, setBox] = useState<Box>(tabs[0]?.id ?? "mine");
   useEffect(() => { if (!tabs.some((t) => t.id === box)) setBox(tabs[0]?.id ?? "mine"); }, [tabs, box]);
-  const [status, setStatus] = useState("active");
+  // "My tickets" shows everything the person raised (withdrawn and closed ones too); the queues start on active work.
+  const [status, setStatus] = useState(box === "mine" ? "" : "active");
+  useEffect(() => setStatus(box === "mine" ? "" : "active"), [box]);
   const [team, setTeam] = useState<TicketTeam | "">("");
   const [priority, setPriority] = useState<TicketPriority | "">("");
   const [overdue, setOverdue] = useState(false);
@@ -106,6 +108,9 @@ export function SupportPage() {
               <option value="in_progress">In progress</option>
               <option value="waiting_for_user">Waiting for requester</option>
               <option value="waiting_for_team">Waiting for another team</option>
+              <option value="resolved">Resolved</option>
+              <option value="closed">Closed</option>
+              <option value="cancelled">{box === "mine" ? "Withdrawn or cancelled" : "Cancelled"}</option>
               <option value="done">Resolved, closed, cancelled</option>
             </Select>
             <Select className="w-44" value={team} onChange={(e) => setTeam(e.target.value as TicketTeam | "")} aria-label="Team">

@@ -283,6 +283,29 @@ class StaffService:
                          resource_type="user", resource_id=user.id, details={"email": user.email, "role": user.role})
         self.session.commit()
 
+    def reset_password(self, principal: Principal, staff_id: uuid.UUID) -> str:
+        """A new temporary password for a support staff account, shown once to the manager who asked (the same
+        managers who see the profile: Branch Manager, Org Admin, Master Admin). The person is signed out everywhere.
+        Only staff accounts: a profile on an ordinary user (from before 2026-11-16) is reset from Users."""
+        staff = self._get(principal, staff_id)
+        user = self.session.get(User, staff.user_id)
+        if user is None or user.deleted_at is not None:
+            raise NotFoundError("Support staff member not found.")
+        if user.role != Role.SUPPORT_AGENT:
+            raise ValidationError("This person's account is not a support staff account: reset their password "
+                                  "from Users.", code="NOT_A_STAFF_ACCOUNT")
+        password = generate_temporary_password()
+        user.password_hash = hash_password(password)
+        user.token_version += 1
+        user.failed_login_attempts = 0
+        user.locked_until = None
+        self.session.execute(update(RefreshToken).where(RefreshToken.user_id == user.id, RefreshToken.revoked_at.is_(None))
+                             .values(revoked_at=datetime.now(UTC)))
+        record_event(self.session, "user.password_reset", actor=principal, organization_id=user.organization_id,
+                     resource_type="user", resource_id=user.id, details={"support_staff": str(staff.id)})
+        self.session.commit()
+        return password
+
     def profile_of(self, principal: Principal, staff_id: uuid.UUID) -> SupportStaff:
         return self._get(principal, staff_id)
 

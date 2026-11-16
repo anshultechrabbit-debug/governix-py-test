@@ -46,7 +46,6 @@ def test_bad_credentials_give_identical_error(client, db, email):
     }
 
 
-@pytest.mark.skip(reason="LOCKOUT DISABLED for now (auth/service.py)")
 def test_lockout_after_repeated_failures(client, db, settings):
     tenant = make_tenant(db)
     for _ in range(settings.LOGIN_MAX_FAILED_ATTEMPTS):

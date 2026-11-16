@@ -82,7 +82,6 @@ def test_a_backup_code_works_once(client, db, tenant):
     assert [e.details["left"] for e in used] == [9]
 
 
-@pytest.mark.skip(reason="LOCKOUT DISABLED for now (auth/service.py)")
 def test_wrong_codes_lock_the_account(client, db, tenant):
     user = login(client, tenant.user_a1)
     turn_on(user)

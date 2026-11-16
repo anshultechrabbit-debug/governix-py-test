@@ -54,6 +54,19 @@ def tenant(db):
 
 
 @pytest.fixture
+def staffed(db, tenant):
+    """Branch Support exists in both branches, but its one member is away: tickets stay in the branch and wait
+    there (a branch with nobody on duty at all sends them on to Head Office)."""
+    for branch in (tenant.branch_a, tenant.branch_b):
+        away = make_user(db, Role.SUPPORT_AGENT, org=tenant.org, branch=branch)
+        away.full_name = "Away Member"
+        db.flush()
+        db.add(SupportStaff(user_id=away.id, level="branch", organization_id=tenant.org.id, branch_id=branch.id,
+                            availability="away"))
+    db.commit()
+
+
+@pytest.fixture
 def master(db):
     user = make_user(db, Role.MASTER_ADMIN)
     db.commit()
@@ -116,7 +129,7 @@ def notifications(session):
 
 # --- routing ----------------------------------------------------------------------------------------------------
 
-def test_a_ticket_waits_for_confirmation_and_opens_where_the_creator_chose(client, db, tenant):
+def test_a_ticket_waits_for_confirmation_and_opens_where_the_creator_chose(client, db, tenant, staffed):
     user = login(client, tenant.user_a1)
     draft = raise_ticket(user)
     # No model (local stand-in): the title and description recommend ("counter", "customers", "cash"), at low
@@ -149,7 +162,7 @@ def test_a_ticket_waits_for_confirmation_and_opens_where_the_creator_chose(clien
     assert any(n["title"].startswith("Unassigned") for n in notifications(manager))
 
 
-def test_the_ai_recommends_and_the_creator_may_switch(client, db, tenant):
+def test_the_ai_recommends_and_the_creator_may_switch(client, db, tenant, staffed):
     model = Triage()
     use_model(model)
     user = login(client, tenant.user_a1)
@@ -184,7 +197,7 @@ def test_low_confidence_disagreement_and_policy_questions(client, db, tenant):
     assert cancelled["status"] == "cancelled"
 
 
-def test_the_model_cannot_route_by_instruction_or_reach_other_tickets(client, db, tenant):
+def test_the_model_cannot_route_by_instruction_or_reach_other_tickets(client, db, tenant, staffed):
     # Whatever the model says, the server places the ticket from the team and the creator's own branch.
     use_model(Triage(team="technical", confidence=1.0, skills=["not-a-staff-skill"]))
     user = login(client, tenant.user_b1)
@@ -239,6 +252,13 @@ def test_each_manager_manages_only_their_own_level(client, db, tenant, master):
     assert staff.get("/support/staff/me").json()["data"]["level"] == "branch"
     moved = login(client, master).patch(f"/users/{bilal.id}", json={"role": "org_admin"})
     assert moved.status_code == 422 and moved.json()["error"]["reason"] == "SUPPORT_STAFF_ACCOUNT"
+    # Their managers reset the password (shown once, signed out everywhere); another branch's manager cannot.
+    assert login(client, tenant.manager_b).post(f"/support/staff/{added['id']}/reset-password", json={}).status_code == 404
+    reset = manager.post(f"/support/staff/{added['id']}/reset-password", json={}).json()["data"]["temporary_password"]
+    assert staff.get("/support/staff/me").status_code == 401
+    staff = agent_login(client, db, {**added, "temporary_password": reset})
+    assert staff.get("/support/staff/me").json()["data"]["level"] == "branch"
+    assert admin.post(f"/support/staff/{head['id']}/reset-password", json={}).status_code == 200
     # Removing them from support closes the account.
     assert manager.delete(f"/support/staff/{added['id']}").status_code == 200
     db.expire_all()
@@ -289,7 +309,7 @@ def test_assignment_prefers_the_lowest_normalized_workload(client, db, tenant):
     assert message["title"].startswith("Assigned to you")
 
 
-def test_nobody_assigns_a_ticket_to_themselves_waiting_tickets_go_by_workload(client, db, tenant, settings):
+def test_nobody_assigns_a_ticket_to_themselves_waiting_tickets_go_by_workload(client, db, tenant, settings, staffed):
     """No "take": a ticket left unassigned (nobody on duty) goes to whoever gets room, by workload, and a lead or
     manager may move a ticket to someone else but never to themselves."""
     manager = login(client, tenant.manager_a)
@@ -317,6 +337,42 @@ def test_nobody_assigns_a_ticket_to_themselves_waiting_tickets_go_by_workload(cl
     TicketService(db, client.app.state.storage, settings).assign_waiting_everywhere()
     db.expire_all()
     assert db.get(Ticket, uuid.UUID(third["id"])).assigned_to_id == lead.id
+
+
+def test_a_branch_with_nobody_on_duty_sends_its_tickets_to_head_office(client, db, tenant, settings):
+    admin = login(client, tenant.admin)
+    user = login(client, tenant.user_a1)
+    # Nobody on duty anywhere: the ticket goes on to Head Office (recorded) and waits there.
+    first = confirm(user, raise_ticket(user))
+    assert first["level"] == "organization" and first["assigned_to_name"] is None
+    moved = [e for e in first["timeline"] if e["kind"] == "forward" and e["data"].get("automatic")]
+    assert moved and moved[0]["body"].endswith("has no one on support duty.") and first["forwarded"] is None
+    # Head Office staff join: the waiting ticket is theirs.
+    head = bank_staff(db, admin, "Hema", level="organization")
+    db.expire_all()
+    assert db.get(Ticket, uuid.UUID(first["id"])).assigned_to_id == head.id
+    # The next one goes straight to them; Head Office cannot forward it back to the empty branch.
+    second = confirm(user, raise_ticket(user))
+    assert second["assigned_to_name"] == "Hema"
+    hema = login(client, head)
+    url = f"/support/tickets/{second['id']}"
+    actions = hema.get(url).json()["data"]["actions"]
+    assert "branch" not in [d["key"] for d in actions["forward"]]
+    # Technical Support is one forward button, not also "Escalate to Technical Support".
+    assert [d["key"] for d in actions["forward"]] == ["technical"] and actions["escalate"] is False
+    refused = hema.post(f"{url}/forward", json={"to": "branch", "reason": "Branch matter", "confirmed": True})
+    assert refused.status_code == 422 and refused.json()["error"]["reason"] == "QUEUE_UNSTAFFED"
+    # A branch that has staff, even all away, keeps its tickets: they wait for its own people.
+    away = bank_staff(db, login(client, tenant.manager_a), "Bina", availability="away")
+    third = confirm(user, raise_ticket(user))
+    assert third["level"] == "branch" and third["assigned_to_name"] is None
+    # Bina leaves the branch for good (deactivated): the waiting ticket moves up on the next sweep.
+    db.execute(update(SupportStaff).where(SupportStaff.user_id == away.id).values(is_active=False))
+    db.commit()
+    TicketService(db, client.app.state.storage, settings).assign_waiting_everywhere()
+    db.expire_all()
+    ticket = db.get(Ticket, uuid.UUID(third["id"]))
+    assert ticket.level == "organization" and ticket.assigned_to_id == head.id
 
 
 def test_skills_pick_among_the_eligible(client, db, tenant):
@@ -400,8 +456,9 @@ def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master)
     assert any(n["type"] == "TICKET_FORWARDED" for n in notifications(user))
     # Priya is told who forwarded it, from where and why, and sees it on the ticket.
     told = [n for n in notifications(priya) if n["type"] == "TICKET_ASSIGNED"]
-    assert told and told[0]["title"].startswith("Forwarded to you")
-    assert told[0]["body"].startswith("Asha forwarded it from Branch Support") and body["reason"] in told[0]["body"]
+    assert told and told[0]["title"].startswith("Moved to you")
+    assert told[0]["body"].startswith("Asha sent it from Branch Support") and body["reason"] in told[0]["body"]
+    assert "to Technical Support" in told[0]["body"] and moved["forwarded"]["how"] == "send"
     assert moved["forwarded"]["by_name"] == "Asha" and moved["forwarded"]["reason"] == body["reason"]
     assert moved["forwarded"]["from_queue"].startswith("Branch Support") and moved["forwarded"]["to_queue"] == "Technical Support"
     assert moved["read_only"] is False and moved["actions"]["reply"] is True
@@ -443,7 +500,7 @@ def test_forwarding_keeps_history_and_tells_everyone(client, db, tenant, master)
     assert {"ticket.created", "ticket.routed", "ticket.assigned", "ticket.forwarded"} <= actions
 
 
-def test_internal_notes_stay_with_the_staff_side(client, db, tenant):
+def test_internal_notes_stay_with_the_staff_side(client, db, tenant, staffed):
     manager = login(client, tenant.manager_a)
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
@@ -485,7 +542,7 @@ def test_staff_never_handle_a_ticket_they_raised(client, db, tenant):
     assert me.get(url).json()["data"]["actions"]["statuses"] == ["open"]
 
 
-def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant):
+def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant, staffed):
     manager = login(client, tenant.manager_a)
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
@@ -517,6 +574,60 @@ def test_lifecycle_transitions_are_checked_on_the_server(client, db, tenant):
     changed = manager.post(f"/support/tickets/{priority['id']}/priority", json={"priority": "urgent"}).json()["data"]
     assert changed["priority"] == "urgent"
     assert datetime.fromisoformat(changed["due_at"]) < datetime.fromisoformat(priority["due_at"])
+
+
+def test_only_a_tickets_own_queue_moves_it(client, db, tenant, staffed):
+    """The Org Admin oversees branch queues: he may work a branch ticket but never move it (the branch escalates
+    it). On Head Office tickets, his own queue, he moves them."""
+    admin, manager, user = (login(client, who) for who in (tenant.admin, tenant.manager_a, tenant.user_a1))
+    ticket = confirm(user, raise_ticket(user))
+    url = f"/support/tickets/{ticket['id']}"
+
+    def actions(session):
+        return session.get(url).json()["data"]["actions"]
+
+    def moves(session):
+        return {d["key"]: d["how"] for d in actions(session)["forward"]}
+
+    assert moves(manager) == {"head_office": "escalate", "technical": "send"}
+    seen = actions(admin)
+    assert seen["forward"] == [] and seen["escalate"] is False
+    assert seen["reply"] and seen["assign"] and seen["priority"] and "in_progress" in seen["statuses"]
+    refused = admin.post(f"{url}/forward", json={"to": "head_office", "reason": "Head Office will handle this",
+                                                  "confirmed": True})
+    assert refused.status_code == 403 and refused.json()["error"]["reason"] == "OVERSIGHT_ONLY"
+    # The branch escalates it; at Head Office, the Org Admin's own queue, he hands it down or sends it on.
+    escalated = manager.post(f"{url}/forward", json={"to": "head_office", "reason": "Needs Head Office",
+                                                      "confirmed": True}).json()["data"]
+    assert escalated["level"] == "organization"
+    assert [e for e in escalated["ticket"]["timeline"] if e["kind"] == "forward"][-1]["data"]["how"] == "escalate"
+    assert moves(admin) == {"branch": "hand", "technical": "send"}
+
+
+def test_the_creator_reopens_what_they_withdrew_not_what_a_manager_cancelled(client, db, tenant, staffed):
+    manager = login(client, tenant.manager_a)
+    user = login(client, tenant.user_a1)
+    sent = confirm(user, raise_ticket(user))
+    url = f"/support/tickets/{sent['id']}"
+    withdrawn = user.post(f"{url}/cancel", json={}).json()["data"]
+    assert withdrawn["status"] == "cancelled" and withdrawn["actions"]["statuses"] == ["open"]
+    # It is still in "My tickets" (all statuses), and under the withdrawn filter.
+    mine = user.get("/support/tickets?box=mine&status=cancelled").json()["data"]["items"]
+    assert [t["id"] for t in mine] == [sent["id"]]
+    reopened = user.post(f"{url}/status", json={"status": "open"}).json()["data"]
+    assert reopened["status"] == "open" and reopened["reopen_count"] == 1 and reopened["actions"]["reply"]
+    assert datetime.fromisoformat(reopened["due_at"]) > datetime.now(UTC)  # a fresh clock
+    # A withdrawn draft comes back as a draft, to be confirmed again.
+    draft = raise_ticket(user)
+    user.post(f"/support/tickets/{draft['id']}/cancel", json={})
+    back = user.post(f"/support/tickets/{draft['id']}/status", json={"status": "open"}).json()["data"]
+    assert back["status"] == "awaiting_confirmation" and back["actions"]["confirm"]
+    # One a manager cancelled stays cancelled.
+    duplicate = confirm(user, raise_ticket(user))
+    manager.post(f"/support/tickets/{duplicate['id']}/cancel", json={"note": "Duplicate"})
+    seen = user.get(f"/support/tickets/{duplicate['id']}").json()["data"]
+    assert seen["actions"]["statuses"] == []
+    assert user.post(f"/support/tickets/{duplicate['id']}/status", json={"status": "open"}).status_code == 403
 
 
 def test_sla_warnings_breaches_escalation_and_auto_close(client, db, tenant, settings):
@@ -576,7 +687,7 @@ def test_reassigning_an_away_member_moves_their_tickets_visibly(client, db, tena
 
 # --- visibility -------------------------------------------------------------------------------------------------
 
-def test_no_one_reaches_another_branch_or_bank(client, db, tenant, master):
+def test_no_one_reaches_another_branch_or_bank(client, db, tenant, master, staffed):
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
     for outsider in (tenant.user_a2, tenant.user_b1, tenant.manager_b):
@@ -601,7 +712,7 @@ def test_no_one_reaches_another_branch_or_bank(client, db, tenant, master):
                                                    "description": "masters do not raise tickets"}).status_code == 403
 
 
-def test_attachments_and_categories(client, db, tenant):
+def test_attachments_and_categories(client, db, tenant, staffed):
     user = login(client, tenant.user_a1)
     ticket = confirm(user, raise_ticket(user))
     sent = user.post(f"/support/tickets/{ticket['id']}/attachments", files={"file": ("receipt.png", io.BytesIO(PNG), "image/png")})
