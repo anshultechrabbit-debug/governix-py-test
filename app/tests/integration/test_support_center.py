@@ -60,10 +60,6 @@ def master(db):
     return user
 
 
-# SUPPORT CENTER DISABLED (2026-11-06): the /support routers are not mounted (app/main.py).
-pytestmark = [pytest.mark.integration, pytest.mark.skip(reason="SUPPORT CENTER DISABLED (2026-11-06)")]
-
-
 def staff_user(db, tenant, branch=None, name="Staff"):
     user = make_user(db, Role.DEPARTMENT_USER, org=tenant.org, branch=branch or tenant.branch_a)
     user.full_name = name

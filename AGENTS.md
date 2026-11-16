@@ -98,12 +98,6 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
 
 ## Support Center (`app/modules/tickets/`, `/support` API; replaced complaints and `/tickets` on 2026-11-03)
 
-- **DISABLED for now (2026-11-06, user's request)**: the whole Support Center and Support Staff are commented out for
-  every role (search "SUPPORT CENTER DISABLED"): the two routers in `app/main.py`, the SLA sweep in
-  `workers/platform/tasks.py` (the task stays registered as a no-op), the routes and menu items in `App.tsx` /
-  `AppLayout.tsx`, the Dashboard card. Tables, models and the module code are untouched;
-  `test_support_center.py` is skipped. Uncomment those places to bring it back.
-
 - **Queues** (`queues.py`): Branch Support (per branch), Head Office Support (per bank), Technical Support
   (Governix, platform). Members are `SupportStaff` profiles on existing accounts; platform staff are
   `support_agent` accounts (no organization, only the `support` permission). Managers: Branch Manager, Org Admin
