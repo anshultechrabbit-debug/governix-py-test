@@ -35,14 +35,16 @@ class OpenAIEmbedding(EmbeddingProvider):
         if self._credit.active:
             return self._local(texts)
         vectors: list[list[float]] = []
+        input_tokens = 0
         try:
             for start in range(0, len(texts), self.max_inputs):
                 batch = [t[:MAX_CHARS_PER_INPUT] or " " for t in texts[start:start + self.max_inputs]]
                 response = self._client.embeddings.create(model=self.model, input=batch, dimensions=self.dimensions)
-                usage_log.record("embeddings", response.model or self.model,
-                                 input_tokens=getattr(response.usage, "prompt_tokens", 0) or 0)
+                batch_tokens = getattr(response.usage, "prompt_tokens", 0) or 0
+                input_tokens += batch_tokens
+                usage_log.record("embeddings", response.model or self.model, input_tokens=batch_tokens)
                 vectors.extend(item.embedding for item in sorted(response.data, key=lambda d: d.index))
-            return Embedded(vectors, self.model_id)
+            return Embedded(vectors, self.model_id, input_tokens)
         except Exception as exc:
             usage_log.record("embeddings", self.model, error=usage_log.error_code(exc))
             if transient(exc):

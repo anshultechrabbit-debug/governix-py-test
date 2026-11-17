@@ -210,6 +210,43 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   not deployed or disabled); with `NGINX_CONF_DIR` unset, an organization with a port counts as active.
 - Field-by-field map to the UI: `docs/dashboards-api.md`. Tests: `app/tests/integration/test_role_dashboards.py`.
 
+## Organization-wise AI management (2026-11-17, `app/modules/ai_management/`, `/organizations/{id}/ai`)
+
+Six modules per organization, configured by the Master Admin only (admin panel: Organizations > an organization's AI
+button > `/masteradmin/organization/:id/ai`; Org Admin read-only at `/organizationadmin/ai-usage`):
+API key vault, models, question limit, token limits, credit budget, alerts. Tables in migration `a3f2e8b1c9d7`.
+
+- **Every AI call of an organization is metered** (`runtime.py`): `organization_llm` / `organization_embedder` /
+  `search_embedder` wrap the provider. Each call reserves an upper estimate in `org_ai_usage` under the
+  organization's advisory lock (milliseconds, never held during the call), then settles with the provider's actual
+  tokens and cost. So concurrent requests cannot overspend; a reservation never settled stops counting after 15 min.
+  The output budget of a call is cut to what the limits leave (`MIN_OUTPUT_TOKENS` 256, else refused).
+- `reserve_question` (in `/ai/ask` and `/ai/ask/stream`, before anything runs) charges one question and refuses with
+  HTTP 429 (`QUESTION_LIMIT_REACHED`, `TOKEN_LIMIT_REACHED`, `CREDIT_LIMIT_REACHED`) or 409
+  (`AI_MODEL_NOT_CONFIGURED`). A limit hit mid-answer is the no-answer reason `AI_LIMIT_REACHED` (transient, not cached).
+- `AIBlocked` is an `AppError` **and** an `LLMUnavailableError`, so optional AI (naming, summaries, ticket triage)
+  degrades as it does in an outage; embeddings raise `AIEmbeddingBlocked` (searches fall back to keywords, an upload
+  stops with `AI_LIMIT_REACHED`).
+- **Nothing configured = no change**: no models assigned and no key → the runtime's shared platform LLM/embedder
+  (`fallback=`), metered but unlimited. Assigned models → only those (default first); all disabled → blocked.
+- Periods are computed from the clock (`service.window`), so resets need no job. Credits: monthly (UTC) or one total
+  budget; rollover carries the previous month's unspent budget, computed once per month (`carried_for`).
+- Prices: the model's own price on its assignment, else `ai_usage.service.PRICES` / `OPENAI_PRICES`. With a budget
+  enforced, an unpriced paid model is refused (`AI_PRICE_UNAVAILABLE`). The provider's own balance is shown only for an
+  OpenAI admin key (Costs API) and never changes the internal budget.
+- Keys: Fernet via `auth.mfa.encrypt` (same `MFA_ENCRYPTION_KEY`), shown as `key_hint` only; add/rotate/enable/disable
+  need step-up. One active key per provider **and kind** (partial unique index). The panel offers OpenAI only for now
+  (`service.ENABLED_PROVIDERS`; the API still accepts every integrated provider).
+  - `kind="api"` makes the calls; checking it stores the chat/embedding models it may use (`details.models`), which
+    the assign-model form offers.
+  - `kind="admin"` (an OpenAI `sk-admin-` key, detected by prefix) never makes calls: it reads OpenAI's Costs and
+    Usage APIs (`provider_account`, optionally for one `openai_project_id`, cached 10 min,
+    `GET /ai/provider-account?refresh=true`). OpenAI has no API for the remaining credit, so that is never shown.
+- Alerts (`evaluate_alerts`, after every call and in the support sweep): default thresholds 70/80/90/95/100 per
+  resource; claiming a row in `org_ai_notif_sent` is the dedupe (once per threshold and period; a jump sends the
+  highest only). Recipients: Master Admins (link to the AI page) and the organization's Org Admins.
+- Tests: `app/tests/integration/test_ai_management.py`.
+
 ## Answer pipeline (`app/modules/rag/service.py`, `RAGService.answer_events`)
 
 1. Standalone rewrite.

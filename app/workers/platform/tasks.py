@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, time, timedelta
 
 from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.runtime import organization_llm
 from app.infrastructure.queue.base import Queue
 from app.infrastructure.queue.registry import JobContext, task
 from app.modules.notifications.service import expiry_sweep
@@ -29,7 +30,9 @@ def summarize(payload: dict, ctx: JobContext) -> None:
         if version is None:
             return
         try:
-            summarize_version(session, rt.llm, version)
+            llm = organization_llm(session, rt.session_factory, rt.settings, version.organization_id,
+                                   fallback=lambda: rt.llm)
+            summarize_version(session, llm, version)
         except LLMUnavailableError:
             # A summary is optional; the policy is fully usable without one.
             logger.warning("No AI summary for version %s: the model is unavailable", version.id)
@@ -56,6 +59,9 @@ def support_sweep(payload: dict, ctx: JobContext) -> None:
     rt = get_runtime()
     with rt.session_factory() as session:
         counts = sla_sweep(session, rt.settings)
+        from app.modules.ai_management.service import AIManagementService
+        # Backstop for the AI usage alerts (each AI call checks its own organization's thresholds at once).
+        counts["ai_alerts"] = AIManagementService(session, rt.settings).sweep_alerts()
         session.commit()
         # Backstop: tickets left unassigned go to whoever has room now (assignment is never by hand).
         counts["assigned"] = TicketService(session, rt.storage, rt.settings).assign_waiting_everywhere()

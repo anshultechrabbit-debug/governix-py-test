@@ -4,8 +4,10 @@ import logging
 
 from sqlalchemy import select
 
+from app.infrastructure.ai.llm.base import LLMUnavailableError
 from app.infrastructure.queue.registry import JobContext, task
 from app.modules.audit.service import record_event
+from app.modules.ai_management.runtime import organization_llm
 from app.modules.documents.model import DocumentStatus
 from app.modules.ingestion import pipeline, progress
 from app.modules.ingestion.analysis.analyzer import analyze_document
@@ -32,7 +34,15 @@ def analyze(payload: dict, ctx: JobContext) -> None:
                 )
             )
             body_font = float((structure.detail or {}).get("body_font_size") or 0.0)
-            analysis = analyze_document(session, document, rt.settings, body_font, llm_factory=lambda: rt.llm)
+            try:
+                # The organization's model, metered against its limits; naming is optional, so a blocked or
+                # unconfigured model leaves the title found from the layout.
+                llm = organization_llm(session, rt.session_factory, rt.settings, document.organization_id,
+                                       fallback=lambda: rt.llm)
+            except LLMUnavailableError:
+                llm = None
+            analysis = analyze_document(session, document, rt.settings, body_font,
+                                        llm_factory=(lambda: llm) if llm is not None else None)
 
             document.status = DocumentStatus.AWAITING_CONFIRMATION
             progress.finish(session, document.id, Stage.ANALYSIS, detail={

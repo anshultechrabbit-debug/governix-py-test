@@ -7,10 +7,11 @@ from app.core.database import get_db
 from app.core.dependencies import get_cache
 from app.core.responses import ApiResponse, ok
 from app.infrastructure.cache.base import Cache
-from app.modules.auth.dependencies import require
+from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.search.schema import SearchRequest, SearchResponse
 from app.modules.search.service import SearchService
+from app.modules.ai_management.runtime import organization_llm, search_embedder
 from app.workers.runtime import get_runtime
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -19,10 +20,20 @@ Searcher = Annotated[Principal, Depends(require(Permission.SEARCH))]
 
 
 def get_service(
-    request: Request, db: Annotated[Session, Depends(get_db)], cache: Annotated[Cache, Depends(get_cache)]
+    request: Request, db: Annotated[Session, Depends(get_db)], cache: Annotated[Cache, Depends(get_cache)],
+    principal: CurrentPrincipal,
 ) -> SearchService:
     runtime = get_runtime()
-    return SearchService(db, request.app.state.session_factory, runtime.embedder, cache, llm_factory=lambda: runtime.llm)
+    settings = request.app.state.settings
+    factory = request.app.state.session_factory
+    if not principal.organization_id:
+        return SearchService(db, factory, runtime.embedder, cache, llm_factory=lambda: runtime.llm)
+    # The caller's organization: its model, its key, its shared limits (ai_management.runtime).
+    llm = organization_llm(db, factory, settings, principal.organization_id, fallback=lambda: runtime.llm,
+                           user_id=principal.user_id)
+    embedder = search_embedder(db, factory, settings, principal.organization_id, runtime.embedder,
+                                     user_id=principal.user_id)
+    return SearchService(db, factory, embedder, cache, llm_factory=lambda: llm)
 
 
 @router.post("", response_model=ApiResponse[SearchResponse])

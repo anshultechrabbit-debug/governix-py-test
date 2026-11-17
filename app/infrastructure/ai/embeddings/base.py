@@ -10,6 +10,7 @@ class Embedded:
     vectors: list[list[float]]
     # The model that actually produced the vectors: a provider's fallback may differ from `model_id`.
     model_id: str
+    input_tokens: int = 0
 
 
 class EmbeddingProvider(ABC):

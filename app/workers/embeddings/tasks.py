@@ -13,6 +13,7 @@ from app.infrastructure.ai.credit import rate_limit_wait
 from app.infrastructure.ai.embeddings.base import EmbeddingUnavailableError
 from app.infrastructure.queue.registry import JobContext, RetryLater, task
 from app.modules.documents.model import Document
+from app.modules.ai_management.runtime import AIEmbeddingBlocked, organization_embedder
 from app.modules.ingestion import pipeline, progress
 from app.modules.ingestion.model import Stage
 from app.modules.ingestion.text import sha256_text
@@ -37,7 +38,8 @@ def embed_batch(payload: dict, ctx: JobContext) -> None:
             return
         with failure_guard(session, document.id, Stage.EMBEDDING, ctx):
             try:
-                embedder = rt.embedder
+                embedder = organization_embedder(session, rt.session_factory, rt.settings,
+                                                 document.organization_id, rt.embedder)
             except EmbeddingUnavailableError as exc:
                 raise PipelineError("EMBEDDINGS_UNAVAILABLE", f"Embedding provider unavailable: {exc}") from None
 
@@ -65,6 +67,10 @@ def embed_batch(payload: dict, ctx: JobContext) -> None:
                     _wait_for_tokens(texts, embedder.model_id, ctx)
                     try:
                         embedded = embedder.embed(texts)
+                    except AIEmbeddingBlocked as exc:
+                        # The organization's embedding token or credit limit: the document waits for a reset or
+                        # a higher limit, with the reason on its page.
+                        raise PipelineError("AI_LIMIT_REACHED", exc.message) from None
                     except Exception as exc:
                         # Many batches share one tokens-per-minute quota: wait for it, spread out,
                         # instead of spending attempts until the document fails.

@@ -35,6 +35,7 @@ from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
+from app.core.exceptions import AppError
 from app.infrastructure.ai.embeddings.base import EmbeddingProvider
 from app.infrastructure.ai.llm.base import LLMProvider, LLMResult, LLMUnavailableError, TimedLLM
 from app.infrastructure.ai.reranker.base import RerankerProvider
@@ -100,6 +101,13 @@ _CALL_NAMES = [
 ]
 
 
+def _unavailable(exc: Exception) -> "_NoAnswer":
+    """The model could not answer: an organization's AI limit (its own message, ai_management), or an outage."""
+    if isinstance(exc, AppError):
+        return _NoAnswer("AI_LIMIT_REACHED", message=exc.message, suggestions=[])
+    return _NoAnswer("LLM_UNAVAILABLE")
+
+
 def _call_name(system: str) -> str:
     return next((name for prompt, name in _CALL_NAMES if system.startswith(prompt[:80])), "other")
 
@@ -141,7 +149,7 @@ NOT_FOUND_REASONS = frozenset({
 # No-answers about what the reader's documents say or lack: for a User, the policies assigned to them.
 ASSIGNED_SCOPE_REASONS = NOT_FOUND_REASONS | {"CLAIM_NOT_CONFIRMED"}
 # No-answers that say nothing about the question, only about this attempt: never cached.
-TRANSIENT_REASONS = frozenset({"DEADLINE_EXCEEDED", "LLM_UNAVAILABLE", "NEEDS_CONTEXT"})
+TRANSIENT_REASONS = frozenset({"DEADLINE_EXCEEDED", "LLM_UNAVAILABLE", "NEEDS_CONTEXT", "AI_LIMIT_REACHED"})
 # No-answers decided by checking what the model wrote against the documents.
 VALIDATION_REASONS = frozenset({"INSUFFICIENT_EVIDENCE", "ANSWER_FAILED_VALIDATION", "ANSWER_OFF_TOPIC"})
 # Characters of each earlier answer that key a follow-up's cached answer.
@@ -1962,7 +1970,7 @@ class RAGService:
                         yield claim
         except LLMUnavailableError as exc:
             logger.error("LLM unavailable: %s", exc)
-            raise _NoAnswer("LLM_UNAVAILABLE") from None
+            raise _unavailable(exc) from None
 
     def _select_stream(self, principal, request, plan: QueryPlan, evidence: EvidenceSet) -> Iterator[dict | LLMResult]:
         """A small model picks the evidence sentences that answer; they are the claims, as written."""
@@ -1988,7 +1996,7 @@ class RAGService:
             ) if sentences else LLMResult(content={"insufficient_evidence": True, "ids": []}, model="select")
         except LLMUnavailableError as exc:
             logger.error("LLM unavailable: %s", exc)
-            raise _NoAnswer("LLM_UNAVAILABLE") from None
+            raise _unavailable(exc) from None
         content = dict(result.content or {})
         if "ids" in content:
             content["ids"] = self._verified_picks(llm, request.question, content["ids"], sentences)

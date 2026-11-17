@@ -16,8 +16,9 @@ from app.core.pagination import Page, PageParams, page_params
 from app.core.responses import ApiResponse, ok
 from app.infrastructure.cache.base import Cache
 from app.modules.audit.model import AuditEvent
-from app.modules.auth.dependencies import require
+from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
+from app.modules.ai_management.runtime import organization_llm, search_embedder, reserve_question
 from app.modules.rag.conversations import ConversationService
 from app.modules.rag.schema import (
     AnswerResponse, AskRequest, ConversationDetail, ConversationMessageRead, ConversationRead, ConversationUpdate,
@@ -35,12 +36,20 @@ def get_service(
     request: Request,
     db: Annotated[Session, Depends(get_db)],
     cache: Annotated[Cache, Depends(get_cache)],
+    principal: CurrentPrincipal,
     settings=Depends(get_app_settings),
 ) -> RAGService:
     runtime = get_runtime()
+    # The caller's organization: its model, its key, its shared limits (ai_management.runtime).
+    llm = (organization_llm(db, request.app.state.session_factory, settings, principal.organization_id,
+                            fallback=lambda: runtime.llm, user_id=principal.user_id)
+           if principal.organization_id else runtime.llm)
+    embedder = (search_embedder(db, request.app.state.session_factory, settings, principal.organization_id,
+                                      runtime.embedder, user_id=principal.user_id)
+                if principal.organization_id else runtime.embedder)
     return RAGService(
         db, request.app.state.session_factory, settings, cache,
-        embedder=runtime.embedder, reranker=runtime.reranker, llm_factory=lambda: runtime.llm,
+        embedder=embedder, reranker=runtime.reranker, llm_factory=lambda: llm,
     )
 
 
@@ -56,6 +65,9 @@ def ask(
     Rate limited per principal: this is the only endpoint that spends LLM budget.
     """
     request.app.state.ai_limiter.check(f"ai:{principal.organization_id}:{principal.user_id}")
+    if principal.organization_id:
+        # One question of the organization's shared quota; refused (429) when a limit is used up.
+        reserve_question(service.session, service.settings, principal.organization_id, principal.user_id)
     response = service.ask(principal, body)
     _save(service.session, principal, body, response)
     return ok(response)
@@ -81,6 +93,7 @@ def ask_stream(
     request: Request,
     body: AskRequest,
     principal: Asker,
+    db: Annotated[Session, Depends(get_db)],
     cache: Annotated[Cache, Depends(get_cache)],
     settings=Depends(get_app_settings),
 ):
@@ -95,6 +108,9 @@ def ask_stream(
     validated claim as soon as it is written instead of after the last one.
     """
     request.app.state.ai_limiter.check(f"ai:{principal.organization_id}:{principal.user_id}")
+    if principal.organization_id:
+        # Before the stream opens, so a used-up limit is an ordinary 429 the page shows.
+        reserve_question(db, settings, principal.organization_id, principal.user_id)
     session_factory = request.app.state.session_factory
     runtime = get_runtime()
 
@@ -102,9 +118,15 @@ def ask_stream(
         yield ": stream open\n\n"  # lets proxies and the browser start delivering at once
         # The stream outlives the request's dependencies, so it owns its session.
         with session_factory() as session:
+            llm = (organization_llm(session, session_factory, settings, principal.organization_id,
+                                    fallback=lambda: runtime.llm, user_id=principal.user_id)
+                   if principal.organization_id else runtime.llm)
+            embedder = (search_embedder(session, session_factory, settings, principal.organization_id,
+                                              runtime.embedder, user_id=principal.user_id)
+                        if principal.organization_id else runtime.embedder)
             service = RAGService(
                 session, session_factory, settings, cache,
-                embedder=runtime.embedder, reranker=runtime.reranker, llm_factory=lambda: runtime.llm,
+                embedder=embedder, reranker=runtime.reranker, llm_factory=lambda: llm,
             )
             try:
                 for kind, data in service.answer_events(principal, body):

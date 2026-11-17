@@ -22,8 +22,10 @@ from app.core.exceptions import NotFoundError
 from app.core.pagination import Page, PageParams, page_params
 from app.core.responses import ApiErrorResponse, ApiResponse, ok
 from app.infrastructure.storage.base import Storage
-from app.modules.auth.dependencies import require
+from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
+from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.runtime import organization_llm
 from app.modules.tickets.model import (
     CategoryRoute, StaffAvailability, StaffRole, TicketLevel, TicketPriority, TicketStatus, TicketTeam,
 )
@@ -49,10 +51,16 @@ StaffManager = Annotated[Principal, Depends(require(Permission.SUPPORT_STAFF_MAN
 
 
 def get_service(db: Annotated[Session, Depends(get_db)], storage: Annotated[Storage, Depends(get_storage)],
-                settings: Annotated[Settings, Depends(get_app_settings)]) -> TicketService:
+                settings: Annotated[Settings, Depends(get_app_settings)],
+                principal: CurrentPrincipal) -> TicketService:
     try:
-        llm = get_runtime().llm
-    except RuntimeError:  # no runtime configured: categories alone recommend
+        runtime = get_runtime()
+        # Triage uses the caller's organization's model and limits; it is optional, so a blocked or
+        # unconfigured model leaves the category to recommend.
+        llm = (organization_llm(db, runtime.session_factory, settings, principal.organization_id,
+                                fallback=lambda: runtime.llm, user_id=principal.user_id)
+               if principal.organization_id else runtime.llm)
+    except (RuntimeError, LLMUnavailableError):  # no runtime, or no model the organization may use
         llm = None
     return TicketService(db, storage, settings, llm)
 

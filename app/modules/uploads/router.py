@@ -12,6 +12,8 @@ from app.infrastructure.queue.base import Queue
 from app.infrastructure.storage.base import Storage
 from app.modules.auth.dependencies import require
 from app.modules.auth.permissions import Permission, Principal
+from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.runtime import organization_llm
 from app.modules.uploads.schema import BatchCreate, BatchItemRead, BatchRead, BatchSummary, PolicySuggestion
 from app.modules.uploads.service import UploadBatchService
 from app.modules.uploads.suggest import suggest_policy
@@ -48,8 +50,15 @@ def suggest(
     uploaded for real once the arrangement is sent.
     """
     runtime = get_runtime()
+    try:
+        llm = (organization_llm(db, runtime.session_factory, settings, principal.organization_id,
+                                fallback=lambda: runtime.llm, user_id=principal.user_id)
+               if principal.organization_id else runtime.llm)
+    except LLMUnavailableError:  # no model the organization may use: the layout alone suggests the name
+        llm = None
     return ok(suggest_policy(
-        db, principal, settings, file.file, intended_policy_id=policy_id, llm_factory=lambda: runtime.llm,
+        db, principal, settings, file.file, intended_policy_id=policy_id,
+        llm_factory=(lambda: llm) if llm is not None else None,
     ))
 
 

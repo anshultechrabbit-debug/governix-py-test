@@ -27,6 +27,8 @@ class NotificationType(StrEnum):
     TICKET_SLA = "TICKET_SLA"
     # Two-step sign-in set up, turned off, reset, or a backup code used: to the person and their managers.
     SECURITY_ALERT = "SECURITY_ALERT"
+    # AI quota / token / credit threshold reached for an organisation.
+    AI_THRESHOLD = "AI_THRESHOLD"
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):
