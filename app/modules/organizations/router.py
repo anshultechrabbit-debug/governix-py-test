@@ -42,8 +42,10 @@ Service = Annotated[OrganizationService, Depends(get_service)]
 
 
 @router.post("", response_model=ApiResponse[OrganizationRead], status_code=201)
-def create_organization(body: OrganizationCreate, principal: MasterAdmin, service: Service):
-    """Create an organisation (with branding) and, optionally, its first admin."""
+def create_organization(body: OrganizationCreate, principal: MasterAdmin, service: Service, confirm_code: StepUp):
+    """Create an organisation (with branding) and, optionally, its first admin. Needs an authenticator code: it
+    opens a new bank on the platform, with a port of its own."""
+    confirm_code("organization.create")
     return ok(organization_read(service.create(principal, body)))
 
 

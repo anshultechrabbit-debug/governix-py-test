@@ -75,10 +75,12 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   403 `STEP_UP_SETUP_REQUIRED` (refused until set up); no/wrong/used code -> 403 `STEP_UP_REQUIRED` / `STEP_UP_INVALID`
   / `STEP_UP_CODE_USED`. App codes only (not backup codes); the spent step is saved with the action, so one code
   approves one action. The frontend client (`api/client.ts`) asks via `StepUpPrompt` and resends; pages need nothing.
-  Covered: add user; change a user's email/role/active/org/branch/department; delete user; reset someone's password
-  or two-step; suspend/reactivate or delete an organization; delete a branch or department (the `confirm=true` call,
+  Covered: add user; change a user's email/role/org/branch/department (a value that really changes:
+  `users/router.sensitive_changes`; forms send the whole user); delete user; reset someone's password or two-step;
+  create (2026-11-17), suspend/reactivate or delete an organization; delete a branch or department (the `confirm=true` call,
   not the preview); publish/disable a portal; withdraw/restore a policy version; delete a policy or document; add
-  support staff. `STEP_UP_ENABLED` (refused off in production) is off in the test suite except `test_step_up.py`.
+  support staff. Turning a user active / inactive needs no code (2026-11-17, the user's choice). `STEP_UP_ENABLED`
+  (refused off in production) is off in the test suite except `test_step_up.py`.
 - Error bodies: `error.code` is the HTTP status (401, 404, ...) and `error.reason` the stable text
   identifier (`INVALID_CREDENTIALS`, `VERSION_CONFLICT`, ...). The frontend's `ApiError.code` holds the
   reason.

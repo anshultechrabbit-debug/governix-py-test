@@ -20,8 +20,22 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 UserAdmin = Annotated[Principal, Depends(require(Permission.USERS_MANAGE))]
-# Changing these needs an authenticator code (auth/step_up.py).
-SENSITIVE_USER_FIELDS = frozenset({"email", "role", "is_active", "organization_id", "branch_id", "department_id"})
+# Changing these needs an authenticator code (auth/step_up.py): who the account is and what it may do. A name, a
+# phone and turning an account on or off (is_active, 2026-11-17, the user's choice) are routine.
+SENSITIVE_USER_FIELDS = frozenset({"email", "role", "organization_id", "branch_id", "department_id"})
+
+
+def sensitive_changes(body: UserUpdate, user: User) -> set[str]:
+    """The sensitive fields the request really changes. Forms send the whole user: an email or role sent unchanged
+    with a status change asks for no code."""
+    changed = set()
+    for field in body.model_fields_set & SENSITIVE_USER_FIELDS:
+        new, old = getattr(body, field), getattr(user, field)
+        if field == "email":
+            new, old = (new or "").lower(), (old or "").lower()
+        if new != old:
+            changed.add(field)
+    return changed
 
 
 def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
@@ -71,8 +85,7 @@ def get_user(user_id: uuid.UUID, principal: CurrentPrincipal, service: Service):
 
 @router.patch("/{user_id}", response_model=ApiResponse[UserRead])
 def update_user(user_id: uuid.UUID, body: UserUpdate, principal: UserAdmin, service: Service, confirm_code: StepUp):
-    # A name or phone change is routine; who the account is, what it may do and whether it works are not.
-    if body.model_fields_set & SENSITIVE_USER_FIELDS:
+    if sensitive_changes(body, service.get(principal, user_id)):
         confirm_code("user.update")
     user = service.update(principal, user_id, body)
     return ok(read(user, *service.names(user)))

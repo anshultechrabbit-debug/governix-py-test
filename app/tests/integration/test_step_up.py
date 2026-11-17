@@ -7,8 +7,9 @@ import pytest
 from sqlalchemy import select
 
 from app.modules.audit.model import AuditEvent
+from app.modules.auth.permissions import Role
 from app.modules.users.model import User
-from app.tests.factories import AuthClient, login, make_tenant
+from app.tests.factories import AuthClient, login, make_tenant, make_user
 
 CODE = "X-Authenticator-Code"
 
@@ -43,8 +44,15 @@ def test_without_an_authenticator_important_actions_are_refused(client, db, tena
     assert refused.status_code == 403 and reason(refused) == "STEP_UP_SETUP_REQUIRED"
     db.expire_all()
     assert db.get(User, tenant.user_b1.id).deleted_at is None
-    # Routine changes are not important actions.
+    # Routine changes are not important actions: a name, or turning an account off and on (2026-11-17), even when
+    # the form sends the unchanged email and role along.
     assert admin.patch(f"/users/{tenant.user_b1.id}", json={"full_name": "New Name"}).status_code == 200
+    unchanged = {"email": tenant.user_b1.email.upper(), "role": "department_user"}
+    assert admin.patch(f"/users/{tenant.user_b1.id}", json={**unchanged, "is_active": False}).status_code == 200
+    assert admin.patch(f"/users/{tenant.user_b1.id}", json={"is_active": True}).status_code == 200
+    # A real change of email is important.
+    assert reason(admin.patch(f"/users/{tenant.user_b1.id}", json={"email": "moved@example.com"})) == \
+        "STEP_UP_SETUP_REQUIRED"
     # Someone without the permission is refused for that, not asked for a code.
     assert reason(login(client, tenant.user_a1).delete(f"/users/{tenant.user_b1.id}")) == "PERMISSION_DENIED"
 
@@ -63,10 +71,10 @@ def test_each_important_action_needs_its_own_fresh_code(client, db, tenant):
     fresh = code_at(secret, 1)
     assert admin.delete(f"/users/{tenant.user_b1.id}", headers={CODE: fresh}).status_code == 200
     # That code approved one action: the next one waits for another code.
-    changed = admin.patch(f"/users/{tenant.user_a2.id}", json={"is_active": False}, headers={CODE: fresh})
+    changed = admin.patch(f"/users/{tenant.user_a2.id}", json={"email": "moved@example.com"}, headers={CODE: fresh})
     assert reason(changed) == "STEP_UP_CODE_USED"
     db.expire_all()
-    assert db.get(User, tenant.user_a2.id).is_active is True
+    assert db.get(User, tenant.user_a2.id).email != "moved@example.com"
 
 
 def test_a_deletion_preview_needs_no_code_but_the_deletion_does(client, db, tenant):
@@ -77,3 +85,15 @@ def test_a_deletion_preview_needs_no_code_but_the_deletion_does(client, db, tena
     assert reason(admin.delete(f"/branches/{tenant.branch_b.id}?confirm=true")) == "STEP_UP_REQUIRED"
     deleted = admin.delete(f"/branches/{tenant.branch_b.id}?confirm=true", headers={CODE: code_at(secret, 1)})
     assert deleted.status_code == 200, deleted.text
+
+
+def test_creating_an_organization_needs_a_code(client, db):
+    master = make_user(db, Role.MASTER_ADMIN)
+    db.commit()
+    platform = login(client, master)
+    body = {"name": "Code Bank", "slug": "code-bank"}
+    assert reason(platform.post("/organizations", json=body)) == "STEP_UP_SETUP_REQUIRED"
+    secret = with_authenticator(platform)
+    assert reason(platform.post("/organizations", json=body)) == "STEP_UP_REQUIRED"
+    created = platform.post("/organizations", json=body, headers={CODE: code_at(secret, 1)})
+    assert created.status_code == 201, created.text
