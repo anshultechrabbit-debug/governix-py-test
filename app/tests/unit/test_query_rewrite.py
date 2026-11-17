@@ -284,3 +284,26 @@ def test_a_message_that_is_only_an_interjection_or_starts_with_a_real_word_is_ke
 
 def test_without_a_model_the_rewrite_gives_no_verdict_on_documents():
     assert standalone_question(None, "Which documents are assigned to me?", []).kind is None
+
+
+def test_the_models_time_reading_is_kept():
+    llm = FakeLLM({"standalone_question": "Did the processing fee go up?", "resolvable": True, "language": "English",
+                   "framing_words": ["go", "up"], "kind": "question", "time_scope": "changes"})
+    rewrite = standalone_question(llm, "Did the processing fee go up?", [])
+    assert rewrite.time_scope == "changes" and {"go", "up"} <= rewrite.framing
+    assert standalone_question(FakeLLM(error=True), "Did the processing fee go up?", []).time_scope is None
+
+
+def test_the_restatement_is_shown_the_nearest_passages():
+    from app.modules.rag.query_rewrite import restated_questions
+    llm = FakeLLM({"questions": ["Can I close my home loan early (foreclosure)?"]})
+    restated = restated_questions(llm, "Can I close my home loan early?",
+                                  passages=["Foreclosure: A borrower may foreclose the loan after 6 EMIs."])
+    assert restated == ["Can I close my home loan early (foreclosure)?"]
+    assert "Nearest passages" in llm.calls[0] and "Foreclosure" in llm.calls[0]
+
+
+def test_small_talk_in_any_words_is_chat():
+    llm = FakeLLM({"standalone_question": "kem cho?", "resolvable": True, "language": "Gujarati",
+                   "framing_words": [], "kind": "chat", "time_scope": "current"})
+    assert standalone_question(llm, "kem cho?", []).kind == "chat"

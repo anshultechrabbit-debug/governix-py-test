@@ -361,8 +361,10 @@ no word lists.
   rewording is discarded.
 - **Framing words** (`Rewrite.framing`, the model's `framing_words`): words that only frame the ask. They are not
   required by the gate, the on-topic check or `_has_subject` (`RAGService._framing`).
-  - A word that no visible document uses is never framing, whatever the model says. That keeps "FIU-IND" refused
-    and leaves typos to the restatement.
+  - A word that no visible document uses is framing only when it is a plain word as typed (v75,
+    `service._plain_word`: letters only, lower case or opening a sentence, not hyphenated/dotted, and not before
+    another subject word). "something" and "consumed" can frame; "FIU-IND", "NRE" and the "car" of "car loans"
+    never do, so those stay refused. Typos are left to the restatement.
   - Figures are never framing. Every claim is still validated.
 - **"Which documents do you have?"** (`kind == "documents"`, no policy named, and no remaining word a document
   uses) gets `DOCUMENT_LIST`: the policies the reader can see (same ACL as search), each with its version in force.
@@ -373,6 +375,34 @@ no word lists.
   ambiguity question and the on-topic check, and never falls back to an earlier version.
 - Without a model (local stand-in, outage) there are no framing words or kinds (`Rewrite.kind` is None). The
   OpenAI client falls back to the local stand-in when a call fails, so the v74 rules below work without one.
+
+## Meaning decides, not the words (v75-v76)
+
+The user's rule: people ask in any words and any sentence shape. With a model, the model's reading of the question
+decides; word patterns and word counts are only the fallback for when no model answers (outage, local stand-in).
+Don't add patterns or word lists to route or refuse questions; extend the model's reading instead.
+
+- **Question type by meaning.** The rewrite returns `time_scope` ("changes" / "since" / "compare" / "current").
+  Whenever it is set, `plan_query` follows it (`_by_meaning`): "Did the fee go up?", "How did the LTV limit
+  evolve?", "Which edition was cheapest?" → `ACROSS_VERSIONS`; "Which version brought in X?" → `since`; "What is new
+  in the latest policy?" → `COMPARISON`. What the question states as data still counts: the UI's choice, version
+  labels and dates. Without a model (None) the old patterns decide. The rewrite also lists words that only ask how
+  something moved ("go", "up", "evolve", "always") as framing.
+- **Refusing on word counts needs the model's agreement.** When `_gate` finds too few of the question's words in
+  the passages (coverage or salient coverage), `_covers_by_meaning` asks the model (`RELEVANCE_CHECK_PROMPT`)
+  whether a passage addresses the question by meaning. Yes → answered (`evidence.meaning_match`, which the
+  on-topic check treats like a close vector match); every claim is still validated and meaning-checked. No, no
+  verdict, or the stand-in → `KEY_TERMS_NOT_FOUND` as before. At most `MAX_RELEVANCE_CHECKS` (3) per question,
+  since a refusal also tries earlier versions.
+- **Small talk in any words** (`Rewrite.kind == "chat"`: "kem cho", "I am fine", "how are youuu") gets the
+  greeting reply, not "not covered". `is_greeting` stays for when no model read it.
+- **Restating a refused question in the documents' words.** After a refusal in `CLARIFY_REASONS`, `_clarify`
+  shows the restatement the nearest passages of that search (`_nearest_passages`: "heading: start of text", 12
+  at most). It may add the documents' term in brackets ("Can I close my home loan early (foreclosure)?"), never
+  swap the subject. `_keeps_subject` checks that every question word the documents use is still there; if not,
+  the restatement is asked again without the passages (the old behaviour).
+- Re-embed any organization whose chunks have `local-hashing-v1-1536` vectors: for those documents only the word
+  lanes work, and none of the meaning paths above (vector gate bypass) can help.
 
 ## Words that name nothing, with or without a model (v74)
 

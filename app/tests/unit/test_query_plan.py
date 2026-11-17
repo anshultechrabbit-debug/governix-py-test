@@ -138,3 +138,31 @@ def test_one_date_stays_an_as_of_question(question):
 
 def test_a_range_of_years_is_a_period_not_two_dates():
     assert not plan_query("What changed between 2020 and 2024?", today=TODAY).as_of_dates
+
+
+@pytest.mark.parametrize("question, scope, cls, since", [
+    # The rewrite model's reading decides, however the question is worded (v75-v76).
+    ("Did the processing fee go up?", "changes", QueryClass.ACROSS_VERSIONS, False),
+    ("How did the LTV limit evolve?", "changes", QueryClass.ACROSS_VERSIONS, False),
+    ("Was the minimum credit score always 700?", "changes", QueryClass.ACROSS_VERSIONS, False),
+    ("Which version brought in Flexi-EMI?", "since", QueryClass.ACROSS_VERSIONS, True),
+    ("What is the processing fee?", "current", QueryClass.CURRENT, False),
+    ("What is new in the latest policy?", "compare", QueryClass.COMPARISON, False),
+    # The model's reading wins over the words: "changed" here is a subject, not a question about versions.
+    ("Has the late payment penalty increased?", "current", QueryClass.CURRENT, False),
+    # Without a model the patterns decide alone, as before.
+    ("Did the processing fee go up?", None, QueryClass.CURRENT, False),
+    ("Has the late payment penalty increased?", None, QueryClass.ACROSS_VERSIONS, False),
+])
+def test_the_models_time_reading_routes_what_the_patterns_miss(question, scope, cls, since):
+    plan = plan_query(question, today=TODAY, time_scope=scope)
+    assert plan.query_class is cls and plan.since is since
+
+
+def test_version_labels_and_dates_are_data_the_models_reading_works_with():
+    assert plan_query("What does v3 say about the fee?", today=TODAY, time_scope="current").query_class \
+        is QueryClass.SPECIFIC_VERSION
+    assert plan_query("What changed in v3?", today=TODAY, time_scope="compare").query_class is QueryClass.COMPARISON
+    assert plan_query("What was the fee in March 2025?", today=TODAY, time_scope="current").as_of == date(2025, 3, 31)
+    plan = plan_query("The fee on 2025-06-15 and on 2026-06-15?", today=TODAY, time_scope="changes")
+    assert plan.query_class is QueryClass.COMPARISON

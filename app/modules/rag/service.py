@@ -60,7 +60,7 @@ from app.modules.rag.evidence import (
 from app.infrastructure.ai.llm.local import LocalLLM
 from app.modules.rag.prompts import (
     MEANING_CHECK_PROMPT, MEANING_CHECK_SCHEMA, OUTPUT_SCHEMA, REASONING_CHECK_PROMPT, REASONING_CHECK_SCHEMA,
-    SUMMARY_CHECK_PROMPT, SUMMARY_CHECK_SCHEMA, SYSTEM_PROMPT,
+    RELEVANCE_CHECK_PROMPT, RELEVANCE_CHECK_SCHEMA, SUMMARY_CHECK_PROMPT, SUMMARY_CHECK_SCHEMA, SYSTEM_PROMPT,
     TRANSLATE_PROMPT, TRANSLATE_SCHEMA,
     COMPUTE_PROMPT, COMPUTE_SCHEMA, build_user_prompt, comparison_text, evidence_block,
 )
@@ -96,6 +96,7 @@ _CALL_NAMES = [
     (MEANING_CHECK_PROMPT, "meaning_check"), (REASONING_CHECK_PROMPT, "reasoning_check"),
     (SUMMARY_CHECK_PROMPT, "summary_check"), (COMPUTE_PROMPT, "compute"), (TRANSLATE_PROMPT, "translate"),
     (REWRITE_PROMPT, "rewrite"), (CLARIFY_PROMPT, "clarify"), (REPHRASE_PROMPT, "rephrase"),
+    (RELEVANCE_CHECK_PROMPT, "relevance_check"),
 ]
 
 
@@ -238,7 +239,15 @@ HISTORY_KEY_CHARS = 300
 #          set aside; "which documents are assign(ed) to me / do you have / can I access" lists the reader's
 #          policies whatever the verb (evidence.documents_held); "what is the policy?" describes the reader's one
 #          policy or asks which; "what documents do I need?" is searched
-ANSWER_CACHE_VERSION = "v74"
+#   v75    wording no longer decides three things: the rewrite model's time_scope routes "Did the fee go up?",
+#          "How did the LTV limit evolve?" across versions where the patterns found nothing; a plain lowercase word
+#          no document uses ("something", "consumed") may be framing when the model says so (terms such as
+#          "FIU-IND" and the "car" of "car loans" never); a refused question is restated with the nearest passages,
+#          so it can add the documents' own term ("close my loan early (foreclosure)"), keeping its own words
+#   v76    meaning decides, not the words: a question the word-count gate would refuse goes to a model relevance
+#          check (_covers_by_meaning) that reads the passages; the rewrite's time_scope decides the plan whenever a
+#          model read the question (patterns only without one); small talk in any words is kind "chat"
+ANSWER_CACHE_VERSION = "v76"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -586,6 +595,11 @@ class RAGService:
         self._missing_calculation = False
         # What the checks found in each written answer of this question: kept in the audit trail of a no-answer.
         self._attempt_checks: list[list[str]] = []
+        # The nearest passages of the last search ("heading: start of text"), for a restatement in the documents'
+        # own words when it found no answer (_clarify).
+        self._nearest: list[str] = []
+        # Relevance checks made for this question (_covers_by_meaning), at most MAX_RELEVANCE_CHECKS.
+        self._relevance_checks = 0
 
     # --- public -----------------------------------------------------------------
 
@@ -656,7 +670,8 @@ class RAGService:
             )
         if restated or (self._worth_clarifying(response, deadline)
                         and (restated := _with_versions(prepared_request.question, self._clarify(
-                            prepared_request.question, timings, history=prepared_request.history)))):
+                            prepared_request.question, timings, history=prepared_request.history,
+                            principal=principal, passages=self._nearest)))):
             # The words as typed found nothing ("pokucy", "hello ... in short", two subjects in one
             # question, or a short follow-up such as "What is the limit?" that only the earlier turns
             # explain): search again for the question(s) as the person meant them. Nothing was shown yet.
@@ -830,6 +845,7 @@ class RAGService:
             as_of=prepared.as_of,
             version_ids=prepared.version_ids,
             date_order=self.settings.DATE_ORDER,
+            time_scope=rewrite.time_scope if rewrite is not None else None,
         )
         return prepared, rewrite, named, plan
 
@@ -867,10 +883,12 @@ class RAGService:
             only = (list(request.policy_ids) or self._only_policy(principal)) if generic else []
             if generic and not only:
                 raise self._document_list(principal, choose=True)
-            if not generic and (is_greeting(request.question) or not self._has_subject(principal, request.question, plan)):
-                # "hi", "thanks", "can you explain in short?": nothing to search for. Searching
-                # anyway lets any passage pass the term checks, which have nothing to check.
-                raise _NoAnswer("GREETING" if is_greeting(request.question) else "NO_SUBJECT", suggestions=[])
+            chat = is_greeting(request.question) or self._kinds.get(request.question) == "chat"
+            if not generic and (chat or not self._has_subject(principal, request.question, plan)):
+                # "hi", "thanks", "kem cho", "I am fine" (small talk, as the rewrite read it, in any words), "can you
+                # explain in short?": nothing to search for. Searching anyway lets any passage pass the term
+                # checks, which have nothing to check.
+                raise _NoAnswer("GREETING" if chat else "NO_SUBJECT", suggestions=[])
             referenced = request.policy_ids or self.retriever.referenced_policies(principal, request.question)
             self._subjects[request.question] = without_references(request.question, mentions)
             self._named_policies[request.question] = list(dict.fromkeys(m.policy_id for m in mentions)) or only
@@ -891,6 +909,7 @@ class RAGService:
                 )
         except _NoAnswer as no_answer:
             response = self._no_answer(request, plan, attempt.evidence, no_answer, attempt.llm_result)
+        self._nearest = _nearest_passages(attempt.evidence)
         return response, attempt.retrieved
 
     def _decorate_and_persist(
@@ -971,15 +990,36 @@ class RAGService:
         timings["translate"] = round((time.perf_counter() - step) * 1000, 1)
         return response
 
-    def _clarify(self, question: str, timings: dict[str, float], history: list | None = None) -> list[str] | None:
+    def _clarify(self, question: str, timings: dict[str, float], history: list | None = None, *,
+                 principal: Principal | None = None, passages: list[str] | None = None) -> list[str] | None:
+        """The question restated for search (spelling, several questions split, a follow-up's subject).
+
+        With `passages` (the nearest ones the search found), it may also add the documents' own term for what the
+        question names in other words ("close my loan early (foreclosure)"). That restatement must keep every word
+        of the question that the documents use (`_keeps_subject`); otherwise it is asked again without them, so a
+        passage can add a term but never swap the subject for another."""
         step = time.perf_counter()
         try:
             llm = self._llm_factory()
         except LLMUnavailableError:
             return None
-        clarified = restated_questions(llm, question, history)
+        clarified = restated_questions(llm, question, history, passages) if passages else None
+        if passages and clarified and principal is not None and not self._keeps_subject(principal, question, clarified):
+            clarified = None
+        if clarified is None:
+            clarified = restated_questions(llm, question, history)
         timings["clarify"] = round((time.perf_counter() - step) * 1000, 1)
         return clarified
+
+    def _keeps_subject(self, principal: Principal, question: str, restated: list[str]) -> bool:
+        """Whether the restatement still asks about everything the question does: each word of the question that
+        the documents use (and that does not only frame it) occurs in some restated question. Words no document
+        uses (misspellings, the reader's own case) may change."""
+        framing = self._framing(principal, question)
+        terms = sorted(t for t in set(key_terms(question)) if t not in framing)
+        unseen = self.retriever.unseen_terms(principal, terms) if terms else set()
+        said = TermIndex(" ".join(restated))
+        return all(said.mentions(t) for t in terms if t not in unseen)
 
     # --- one pass: retrieve, gate, generate --------------------------------------------
 
@@ -1084,7 +1124,8 @@ class RAGService:
         names: list[str] = []  # the policies cited so far
         passages: list[str] = []  # and their passages
         on_topic = evidence.comparison is not None or is_document_question(request.question) or plan.overview
-        close = self._close_in_meaning(evidence.items)  # as the final check (_validated_answer) decides
+        # As the final check (_validated_answer) decides.
+        close = self._close_in_meaning(evidence.items) or evidence.meaning_match
         for part in self._generate_stream(principal, request, plan, evidence):
             if isinstance(part, LLMResult):
                 attempt.llm_result = part
@@ -1517,11 +1558,45 @@ class RAGService:
                 subject, [i.full_text + " " + i.source.section_path for i in evidence.items], ignore)
         if self._close_in_meaning(evidence.items):
             return  # worded differently, but a passage means what was asked: the model judges it
+        missing: list[str] | None = None
         if evidence.coverage < self.settings.RAG_MIN_TERM_COVERAGE:
-            raise _NoAnswer("KEY_TERMS_NOT_FOUND", evidence.missing_terms)
-        salient, missing = self._salient_coverage(principal, question, evidence, ignore)
-        if salient < self.settings.RAG_MIN_SALIENT_COVERAGE:
-            raise _NoAnswer("KEY_TERMS_NOT_FOUND", missing)
+            missing = evidence.missing_terms
+        else:
+            salient, salient_missing = self._salient_coverage(principal, question, evidence, ignore)
+            if salient < self.settings.RAG_MIN_SALIENT_COVERAGE:
+                missing = salient_missing
+        if missing is None:
+            return
+        # Too few of the question's words are in the passages. That is a sign, not a verdict: the reader may say
+        # it in any words. The model reads the passages and decides by meaning; every claim is still checked
+        # against them. No verdict (model down, the quoting stand-in, check off): refused on the words, as before.
+        if self._covers_by_meaning(question, evidence):
+            evidence.meaning_match = True
+            return
+        raise _NoAnswer("KEY_TERMS_NOT_FOUND", missing)
+
+    def _covers_by_meaning(self, question: str, evidence: EvidenceSet) -> bool:
+        """Whether a passage addresses the question by meaning, whatever words either uses (one model call,
+        RELEVANCE_CHECK_PROMPT). At most MAX_RELEVANCE_CHECKS per question (a refusal also tries earlier versions)."""
+        if not self.settings.RAG_MEANING_CHECK or self._relevance_checks >= MAX_RELEVANCE_CHECKS:
+            return False
+        self._relevance_checks += 1
+        blocks = [f"[{item.id}] {item.source.section_path or ''}\n{' '.join(item.full_text.split())[:RELEVANCE_PASSAGE_CHARS]}"
+                  for item in evidence.items]
+        try:
+            result = self._llm_factory().generate_json(
+                RELEVANCE_CHECK_PROMPT, f"Question: {question}\n\nPassages:\n<<<\n" + "\n\n".join(blocks) + "\n>>>",
+                RELEVANCE_CHECK_SCHEMA, context={"task": "relevance_check"},
+            )
+        except LLMUnavailableError:
+            return False
+        if result.model == LocalLLM.model_id:
+            return False  # the stand-in quotes; it cannot judge meaning
+        content = result.content or {}
+        ids = {item.id for item in evidence.items}
+        named = content.get("passages") if isinstance(content.get("passages"), list) else []
+        # A verdict that names no passage it was shown is no verdict.
+        return content.get("covers") is True and any(str(p).strip("[] ") in ids for p in named)
 
     def _close_in_meaning(self, items) -> bool:
         """A passage the vector lane found at least RAG_SEMANTIC_MIN_SIMILARITY close to the question."""
@@ -1541,12 +1616,17 @@ class RAGService:
         """The question's words that only frame the ask ("Tell me something about ...", "... so far?"), as the
         rewrite judged them, whatever words the reader chose: not required in the evidence or the answer.
 
-        Only words some visible document uses. A word no document uses stays a subject whatever the model says:
-        it is the surest sign the documents do not cover the question ("FIU-IND"), or a misspelling the
-        restatement corrects. Figures are never framing. Every claim is still checked against its passage."""
+        A word no document uses stays a subject whatever the model says, unless it is a plain word as typed
+        (`_plain_word`: "something", "consumed", "evolve"). A term ("FIU-IND", "NRE", "e-KYC") or the word before
+        another subject word (the "car" of "car loans") is the surest sign the documents do not cover the
+        question, so it always stays. Figures are never framing. Every claim is still checked against its passage."""
         words = {w for w in self._framing_words.get(question, ()) if not any(ch.isdigit() for ch in w)}
-        terms = sorted(words & set(key_terms(question)))
-        return set(terms) - self.retriever.unseen_terms(principal, terms) if terms else set()
+        all_terms = set(key_terms(question))
+        terms = sorted(words & all_terms)
+        if not terms:
+            return set()
+        unseen = self.retriever.unseen_terms(principal, terms)
+        return {t for t in terms if t not in unseen or _plain_word(question, t, all_terms)}
 
     def _subject_terms(self, principal: Principal, question: str) -> list[str]:
         """What the question asks about, as terms: without the policies it names, the words that frame it,
@@ -1581,7 +1661,7 @@ class RAGService:
             return False
         kind = self._kinds.get(question)
         held = documents_held(question)
-        if kind == "question" or (kind is None and held is None):
+        if kind in ("question", "chat") or (kind is None and held is None):
             return False
         framing = self._framing_words.get(question, frozenset())
         terms = sorted({t for t in key_terms(held if held is not None else question) if t not in framing})
@@ -2100,7 +2180,8 @@ class RAGService:
             named = [" ".join(filter(None, [items[e].source.policy_name, items[e].source.document_title]))
                      for e in cited if e in items and items[e].source.version_id not in evidence.unrelated]
             if (missing := self._off_topic(principal, request.question, [r.text for r in valid] + named,
-                                           [texts[e].text for e in cited], close=self._close_in_meaning(evidence.items))):
+                                           [texts[e].text for e in cited],
+                                           close=self._close_in_meaning(evidence.items) or evidence.meaning_match)):
                 # The answer does not repeat words of the question ("meet", "criterion"): judged by meaning,
                 # keeping only the claims about what was asked. No verdict (check off, model down): withheld.
                 judged |= self._judge(request.question, [r for r in valid if id(r) not in judged], texts)
@@ -2738,6 +2819,50 @@ def _decimal(text: str) -> Decimal | None:
 
 MAX_NEARBY_TOPICS = 3
 _NOT_A_TOPIC = re.compile(r"^(?:front\s+matter|contents|table\s+of\s+contents|index|annexures?)$", re.I)
+
+
+# Model relevance checks per question (_covers_by_meaning), and the characters of each passage shown to one.
+MAX_RELEVANCE_CHECKS = 3
+RELEVANCE_PASSAGE_CHARS = 900
+# Characters of each passage shown to the restatement after its heading (_nearest_passages).
+NEAREST_PASSAGE_CHARS = 160
+
+
+def _nearest_passages(evidence: EvidenceSet) -> list[str]:
+    """The passages a search came closest with, as "heading: start of text", without repeats, contents pages or
+    front matter: what the documents call the things near the question, for the restatement (_clarify)."""
+    seen: list[str] = []
+    for item in evidence.items:
+        parts = [p.strip() for p in (item.source.section_path or "").split(">") if p.strip()]
+        if parts and _NOT_A_TOPIC.match(parts[-1].rstrip("?.:;")):
+            continue
+        heading = " > ".join(parts[-2:])[:120]
+        text = " ".join((item.candidate.text or "").split())[:NEAREST_PASSAGE_CHARS]
+        line = f"{heading}: {text}" if heading else text
+        if line and line not in seen:
+            seen.append(line)
+    return seen
+
+
+def _plain_word(question: str, term: str, terms: set[str]) -> bool:
+    """Whether `term` is a plain word everywhere the question uses it: letters only, typed in lower case, not part of
+    a hyphenated, dotted or slashed token, and not followed by another subject word. "Tell me something about the
+    mortgage policy" (something) and "What have you consumed so far?" (consumed, far) are plain; "FIU-IND", "NRE",
+    "e-KYC" are terms, and "car" in "car loans" names which loans."""
+    if not term.isalpha():
+        return False
+    found = False
+    for match in re.finditer(rf"(?<![\w./-]){re.escape(term)}(?![\w/-]|\.\w)", question, re.I):
+        found = True
+        word = match.group(0)
+        # Lower case, or capitalised only because it opens a sentence ("Something about the mortgage policy?").
+        opens = not question[:match.start()].strip() or question[:match.start()].rstrip()[-1] in ".?!"
+        if word != word.lower() and not (opens and word == word.capitalize()):
+            return False
+        after = re.match(r"\s+([A-Za-z][\w-]*)", question[match.end():])
+        if after and after.group(1).lower() in terms:
+            return False
+    return found
 
 
 def _explain_not_found(reason: str, evidence: EvidenceSet, *, claim: bool = False) -> tuple[str, list[str]] | None:

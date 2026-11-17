@@ -168,7 +168,15 @@ def plan_query(
     version_ids: list[uuid.UUID] | None = None,
     date_order: str = "DMY",
     today: date | None = None,
+    time_scope: str | None = None,
 ) -> QueryPlan:
+    """How to search for `question`.
+
+    `time_scope` is the rewrite model's reading of what the question asks about, by meaning, however it is
+    worded: "changes" (a figure across the versions or how it moved), "since" (when it started), "compare" (what
+    changed between versions) or "current". When a model read the question, its reading decides; the word
+    patterns below decide only without one (None: local stand-in, outage). What the question states as data
+    decides either way: the UI's choice, version labels ("v2") and dates."""
     today = today or datetime.now(UTC).date()
     version_ids = version_ids or []
 
@@ -187,7 +195,7 @@ def plan_query(
         # every version named, each answered from its own text.
         return QueryPlan(QueryClass.COMPARISON, "versions", version_labels=labels[:MAX_COMPARED_VERSIONS],
                          explanation="Question compares versions " + ", ".join(labels[:MAX_COMPARED_VERSIONS]))
-    if labels and _COMPARE.search(question):
+    if labels and (time_scope in ("compare", "changes") if time_scope is not None else _COMPARE.search(question)):
         # "What changed in version 2.0?": that version and the one it is compared with.
         return QueryPlan(QueryClass.COMPARISON, "versions", version_labels=labels,
                          explanation=f"Question asks how version {labels[0]} differs from another version")
@@ -199,6 +207,8 @@ def plan_query(
         return QueryPlan(QueryClass.COMPARISON, "versions", as_of_dates=dates[:MAX_COMPARED_VERSIONS],
                          explanation=f"Question compares the versions in force on {shown}; each passage is "
                                      "labelled with its version and the period it was in force")
+    if time_scope is not None:
+        return _by_meaning(question, time_scope, labels, date_order, today)
     if not labels and asks_when_introduced(question):
         return QueryPlan(QueryClass.ACROSS_VERSIONS, "all", since=True,
                          explanation="Question asks when something started or changed; every version is searched, "
@@ -217,10 +227,30 @@ def plan_query(
     if _COMPARE.search(question) and not labels and _VERSION_CONTEXT.search(question):
         return QueryPlan(QueryClass.COMPARISON, "versions",
                          explanation="Question asks what changed between versions")
+    return _in_force(question, labels, date_order, today)
+
+
+def _by_meaning(question: str, time_scope: str, labels: list[str], date_order: str, today: date) -> QueryPlan:
+    """The plan from the model's reading of the question (plan_query's `time_scope`)."""
+    if not labels and time_scope == "since":
+        return QueryPlan(QueryClass.ACROSS_VERSIONS, "all", since=True,
+                         explanation="Question asks when something started or changed; every version is searched, "
+                                     "oldest first, each passage labelled with its version and effective date")
+    if not labels and time_scope == "changes":
+        return QueryPlan(QueryClass.ACROSS_VERSIONS, "all",
+                         explanation="Question asks about a figure across the versions or how it changed; every "
+                                     "version is searched, oldest first, each passage labelled with its version and "
+                                     "the period it was in force")
+    if not labels and time_scope == "compare":
+        return QueryPlan(QueryClass.COMPARISON, "versions", explanation="Question asks what changed between versions")
+    return _in_force(question, labels, date_order, today)
+
+
+def _in_force(question: str, labels: list[str], date_order: str, today: date) -> QueryPlan:
+    """One version: the one named, the one in force on the date given, or the one in force now."""
     if labels:
         return QueryPlan(QueryClass.SPECIFIC_VERSION, "versions", version_labels=labels[:1],
                          explanation=f"Question names version {labels[0]}")
-
     detected = _date_in_question(question, date_order)
     if detected is not None:
         state = "Historical" if detected < today else "Current"

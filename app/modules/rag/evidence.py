@@ -306,6 +306,9 @@ class EvidenceSet:
     unrelated: dict = field(default_factory=dict)
     # Documents whose passages held instructions to an AI, removed before answering (rag/injection.py).
     injections: list[str] = field(default_factory=list)
+    # The model judged that a passage addresses the question though they share few words (RAGService._gate): as
+    # for a close vector match, words no document uses are then no reason to call the answer off topic.
+    meaning_match: bool = False
 
     def by_id(self) -> dict[str, EvidenceItem]:
         return {item.id: item for item in self.items}
