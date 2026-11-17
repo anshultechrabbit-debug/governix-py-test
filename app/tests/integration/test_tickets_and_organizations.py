@@ -67,8 +67,14 @@ def test_organisation_port_is_in_range_and_unique_and_font_is_listed(client, mas
                                                  "brand_font": "Comic Sans"}).status_code == 422
 
     options = platform.get("/organizations/options").json()["data"]
-    assert (options["port_min"], options["port_max"]) == (7001, 7100) and "Manrope" in options["fonts"]
+    assert (options["port_min"], options["port_max"]) == (7003, 7100) and "Manrope" in options["fonts"]
     assert [(t["port"], t["organization_name"]) for t in options["taken_ports"]] == [(7007, "Port Bank")]
+    assert options["next_port"] == 7003
+
+    # No port given: the lowest free one, by default.
+    auto = platform.post("/organizations", json={"name": "Auto Bank", "slug": "auto-bank"}).json()["data"]
+    assert auto["allowed_port"] == 7003
+    assert platform.get("/organizations/options").json()["data"]["next_port"] == 7004
 
     # Keeping its own port is not a conflict; another organization's is.
     org_id = created.json()["data"]["id"]

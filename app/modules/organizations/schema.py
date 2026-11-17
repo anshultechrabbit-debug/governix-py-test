@@ -90,6 +90,8 @@ class OrganizationOptions(BaseModel):
     port_max: int
     taken_ports: list[TakenPort]
     fonts: list[str]
+    # What a new organization gets when the form leaves the port empty; None when the range is full.
+    next_port: int | None = None
 
 
 DeletableType = Literal["organization", "branch", "department"]

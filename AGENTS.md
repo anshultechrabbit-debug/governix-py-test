@@ -171,6 +171,26 @@ Alembic migrations, Postgres 18 with pgvector 0.8, and a React + Tailwind + Redu
   overdue ticket.
 - Tests: `app/tests/integration/test_support_center.py`.
 
+## nginx deploy: port + domain (2026-11-16, `app/modules/nginx/service.py`, `deploy/README.md` 4a/4b)
+
+- One click (Organizations > Nginx > Deploy, step-up code) writes `governix-<slug>.conf`: a server block on the bank's
+  port, and with `NGINX_BASE_DOMAIN` one for `<slug>.<base>` on `NGINX_DOMAIN_PORT` (the Node backend's
+  `DEFAULT_BASE_DOMAIN`). The live site is IP-based (http://89.116.122.215:<port>): leave NGINX_BASE_DOMAIN unset and
+  set `NGINX_PUBLIC_HOST` so the page links each port. `nginx -t` + reload; any failure puts the previous file and link back.
+- Ports by default (2026-11-16): a new organization without `allowed_port` gets the lowest free port of
+  `TENANT_PORT_MIN..MAX` (7003-7100; 7001 is the Master Admin portal); `/organizations/options` returns `next_port`
+  and the panel's Add Organization form fills it in. Keeping an existing port is never refused, even outside the range.
+- `NGINX_ENABLED_DIR` (sites-available + sites-enabled, the Node layout): the file is linked there; Disable unlinks.
+- `NGINX_CERTBOT_COMMAND` (`certbot certonly --nginx ...`): a domain without a certificate gets one
+  (`--cert-name governix-<slug>`), then the file is rewritten with 443 + http→https redirect. A certbot failure leaves
+  the site live on http and returns `warning` (shown on the page). The file stays deterministic (the template, not
+  certbot, writes the ssl lines), so "outdated" detection still works.
+- `GET /tenant-info?host=&port=` (public, `organizations/tenant.py`): the sign-in page's bank, by domain first, then
+  port; active organizations only; name, colors, font, logo (`/tenant-info/logo`). The admin panel's TenantContext
+  sends `host`.
+- Not built yet: a custom domain per bank (the panel's "Add custom domain"). It needs an `organizations.domain`
+  column: ask before adding it. Tests: `app/tests/integration/test_nginx_deploy.py`.
+
 ## Role dashboards (2026-11-16, `app/modules/dashboard/`, for the admin panel's three dashboards)
 
 - `GET /dashboard/platform` (Master Admin only), `/dashboard/organization` (Org Admin only), `/dashboard/branch`

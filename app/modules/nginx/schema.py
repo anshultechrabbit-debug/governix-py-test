@@ -18,16 +18,31 @@ class NginxSite(BaseModel):
     # Where the file is, or would be written.
     config_file: str | None
     deployed_at: datetime | None
+    # Host names it is served on besides its port (<slug>.<NGINX_BASE_DOMAIN>); empty when that is not set.
+    domains: list[str] = []
+    # A certificate exists, so the domains are served over https.
+    https: bool = False
+    # Where to open it: its domains first ("https://hdfc.governix.example.com"), then its port on
+    # NGINX_PUBLIC_HOST ("http://89.116.122.215:7003").
+    urls: list[str] = []
 
 
 class NginxDetail(NginxSite):
     configured: bool
     # NGINX_SERVER_NAME; "_" answers any host name (organizations are told apart by port).
     server_name: str
+    # sites-enabled link a deploy makes (NGINX_ENABLED_DIR), or None.
+    enabled_link: str | None = None
+    # A deploy asks certbot for a certificate for the domains (NGINX_CERTBOT_COMMAND).
+    certbot: bool = False
     # What a deploy writes now; None when the organization has no port.
     config: str | None
+    # After a deploy: why https is not on yet (certbot's message); the site is live on http.
+    warning: str | None = None
 
 
 class NginxOverview(BaseModel):
     configured: bool
+    # NGINX_BASE_DOMAIN: organizations are served on <slug>.<this>; None when off.
+    base_domain: str | None = None
     sites: list[NginxSite]

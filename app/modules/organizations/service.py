@@ -51,7 +51,14 @@ class OrganizationService:
                 for o in self.repository.with_ports()
             ],
             fonts=list(BRAND_FONTS),
+            next_port=self.next_free_port(),
         )
+
+    def next_free_port(self) -> int | None:
+        """The lowest port of the tenant range no organization holds (deleted ones keep theirs), or None."""
+        taken = {o.allowed_port for o in self.repository.with_ports()}
+        low, high = self.settings.TENANT_PORT_MIN, self.settings.TENANT_PORT_MAX
+        return next((port for port in range(low, high + 1) if port not in taken), None)
 
     def _check_port(self, port: int | None, organization_id: uuid.UUID | None = None) -> None:
         """A port must lie in the tenant range and belong to no other organization."""
@@ -68,13 +75,23 @@ class OrganizationService:
         """Create the organisation and, when given, its first admin, in one transaction."""
         if data.admin is not None and UserRepository(self.session).email_exists(data.admin.email):
             raise ValidationError("A user with this email already exists.", code="EMAIL_TAKEN")
-        self._check_port(data.allowed_port)
+        # No port given: the next free one, so every new organization has its own address by default.
+        port = data.allowed_port
+        if port is None:
+            port = self.next_free_port()
+            if port is None:
+                low, high = self.settings.TENANT_PORT_MIN, self.settings.TENANT_PORT_MAX
+                raise ConflictError(f"Every port from {low} to {high} is in use. Free one, or widen "
+                                    "TENANT_PORT_MIN / TENANT_PORT_MAX.", code="NO_FREE_PORT")
+        else:
+            self._check_port(port)
         with translate_unique_violation(
             self.session, "An organization with this slug or port already exists."
         ):
             organization = self.repository.add(Organization(
                 name=data.name, slug=data.slug,
-                **{field: getattr(data, field) for field in PROFILE_FIELDS},
+                **{field: getattr(data, field) for field in PROFILE_FIELDS if field != "allowed_port"},
+                allowed_port=port,
             ))
             seed_default_categories(self.session, organization)
             record_event(
@@ -84,7 +101,7 @@ class OrganizationService:
                 organization_id=organization.id,
                 resource_type="organization",
                 resource_id=organization.id,
-                details={"name": data.name, "slug": data.slug, "allowed_port": data.allowed_port},
+                details={"name": data.name, "slug": data.slug, "allowed_port": port},
             )
             if data.admin is not None:
                 check_password(data.admin.password, email=data.admin.email, name=data.admin.full_name)
@@ -140,7 +157,8 @@ class OrganizationService:
         changes = data.model_dump(exclude_unset=True)
         # Profile fields may be cleared; name and status only change when given.
         changes = {k: v for k, v in changes.items() if v is not None or k in PROFILE_FIELDS}
-        if "allowed_port" in changes:
+        # Keeping its port is always allowed, even one outside a range that changed since.
+        if "allowed_port" in changes and changes["allowed_port"] != organization.allowed_port:
             self._check_port(changes["allowed_port"], organization.id)
         for field, value in changes.items():
             setattr(organization, field, value)

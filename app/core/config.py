@@ -163,7 +163,9 @@ class Settings(BaseSettings):
         "http://192.168.1.147:7001",
         "*",
     ]
-    TENANT_PORT_MIN: int = 7001
+    # Organizations' ports. 7001 is the Master Admin portal (and 7002 kept free), as in the Node backend's
+    # PORT_RANGE_MIN; a new organization without a port gets the lowest free one.
+    TENANT_PORT_MIN: int = 7003
     TENANT_PORT_MAX: int = 7100
 
     # nginx (Organizations → Nginx): each organization's port gets a server block that serves the
@@ -179,6 +181,23 @@ class Settings(BaseSettings):
     # "sudo -n /usr/sbin/nginx -s reload", with a sudoers rule for exactly these two.
     NGINX_TEST_COMMAND: str = "nginx -t"
     NGINX_RELOAD_COMMAND: str = "nginx -s reload"
+    # Domains (like the Node backend's DEFAULT_BASE_DOMAIN): set, every organization is also served on
+    # <slug>.<NGINX_BASE_DOMAIN> on NGINX_DOMAIN_PORT, in the same file as its port. DNS: a wildcard record
+    # *.<NGINX_BASE_DOMAIN> pointing at this server. Unset, organizations are told apart by port only.
+    NGINX_BASE_DOMAIN: str | None = None
+    NGINX_DOMAIN_PORT: int = 80
+    # The address people reach this server on (an IP such as 89.116.122.215, or a host name). Only shown: the
+    # Nginx page links each organization's portal as http://<this>:<port>.
+    NGINX_PUBLIC_HOST: str | None = None
+    # sites-available / sites-enabled layout: NGINX_CONF_DIR=/etc/nginx/sites-available and this set to
+    # /etc/nginx/sites-enabled; a deploy writes the file there and links it here, a disable removes the link.
+    NGINX_ENABLED_DIR: Path | None = None
+    # HTTPS for the domains, run without a shell after the http deploy, for example
+    # "certbot certonly --nginx --non-interactive --agree-tos -m ops@bank.com" (prefix "sudo -n" if not root).
+    # Governix adds --cert-name governix-<slug> and -d <domain>; once the certificate is in NGINX_CERT_DIR the
+    # domain is served on 443 and http redirects there. Unset: http only.
+    NGINX_CERTBOT_COMMAND: str | None = None
+    NGINX_CERT_DIR: Path = Path("/etc/letsencrypt/live")
 
     # AI providers. "openai" is the configured default; "local" providers are
     # deterministic stand-ins for development/tests without an API key; "ollama"
@@ -340,6 +359,24 @@ class Settings(BaseSettings):
         if not re.fullmatch(r"_|[A-Za-z0-9*.-]+( [A-Za-z0-9*.-]+)*", value.strip()):
             raise ValueError("NGINX_SERVER_NAME must be '_' or host names separated by spaces.")
         return value.strip()
+
+    @field_validator("NGINX_PUBLIC_HOST")
+    @classmethod
+    def nginx_public_host_is_a_host(cls, value: str | None) -> str | None:
+        value = (value or "").strip().lower().removeprefix("http://").removeprefix("https://").rstrip("/") or None
+        if value is not None and not re.fullmatch(r"[a-z0-9.-]{1,253}|\[[0-9a-f:]+\]", value):
+            raise ValueError("NGINX_PUBLIC_HOST must be an IP address or host name, without a port.")
+        return value
+
+    @field_validator("NGINX_BASE_DOMAIN")
+    @classmethod
+    def nginx_base_domain_is_a_host(cls, value: str | None) -> str | None:
+        value = (value or "").strip().lower().rstrip(".") or None
+        if value is not None and not re.fullmatch(
+            r"(?=.{1,200}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]", value
+        ):
+            raise ValueError("NGINX_BASE_DOMAIN must be a domain such as governix.example.com (no scheme or port).")
+        return value
 
     @field_validator("DATABASE_URL")
     @classmethod
