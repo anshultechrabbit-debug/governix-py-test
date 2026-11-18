@@ -34,8 +34,28 @@ class AuditRepository:
         limit: int,
         offset: int,
         every_organization: bool = False,
+        search: str | None = None,
+        actor_role: str | None = None,
     ) -> tuple[list[AuditEvent], int]:
         query = self._scoped(select(AuditEvent), organization_id, every_organization)
+        if search or actor_role:
+            from app.modules.organizations.model import Organization
+            from app.modules.users.model import User
+
+            query = (query.outerjoin(User, User.id == AuditEvent.actor_user_id)
+                     .outerjoin(Organization, Organization.id == AuditEvent.organization_id))
+            if actor_role:
+                query = query.where(User.role == actor_role)
+            if search:
+                # Who did it (name, email), what (action, resource), and where (organization).
+                pattern = f"%{search.lower()}%"
+                query = query.where(
+                    func.lower(AuditEvent.action).like(pattern)
+                    | func.lower(func.coalesce(AuditEvent.resource_type, "")).like(pattern)
+                    | func.lower(func.coalesce(User.email, "")).like(pattern)
+                    | func.lower(func.coalesce(User.full_name, "")).like(pattern)
+                    | func.lower(func.coalesce(Organization.name, "")).like(pattern)
+                )
         if action:
             query = query.where(AuditEvent.action == action)
         if resource_type:

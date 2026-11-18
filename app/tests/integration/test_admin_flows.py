@@ -70,3 +70,26 @@ def test_org_admin_moves_branch_managers_within_its_organization(client, db):
     # Users are their Branch Manager's, and Organization Admins the Master Admin's.
     assert admin.patch(f"/users/{tenant.user_a1.id}", json={"role": "branch_manager"}).status_code == 404
     assert admin.patch(f"/users/{tenant.admin.id}", json={"is_active": False}).status_code == 404
+
+
+def test_master_admin_sees_every_user_and_manages_only_its_own(client, db):
+    from app.modules.auth.permissions import Role
+    from app.tests.factories import login, make_tenant, make_user
+
+    tenant = make_tenant(db)
+    master_user = make_user(db, Role.MASTER_ADMIN)
+    db.commit()
+    master = login(client, master_user)
+    listed = {u["id"]: u for u in master.get("/users", params={"limit": 200}).json()["data"]["items"]}
+    # Everyone on the platform, the same number as the counts.
+    expected = {tenant.admin, tenant.manager_a, tenant.manager_b, tenant.user_a1, tenant.user_a2, tenant.user_b1, master_user}
+    assert {str(u.id) for u in expected} <= set(listed)
+    assert master.get("/users/stats").json()["data"]["total"] == len(listed)
+    # Its own people are editable; the banks' Branch Managers and Users (and itself) are read only.
+    assert listed[str(tenant.admin.id)]["can_manage"] is True
+    assert listed[str(tenant.manager_a.id)]["can_manage"] is False
+    assert listed[str(tenant.user_a1.id)]["can_manage"] is False
+    assert listed[str(master_user.id)]["can_manage"] is False
+    viewed = master.get(f"/users/{tenant.user_a1.id}")
+    assert viewed.status_code == 200 and viewed.json()["data"]["can_manage"] is False
+    assert master.patch(f"/users/{tenant.user_a1.id}", json={"full_name": "Changed"}).status_code == 404

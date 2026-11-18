@@ -8,10 +8,11 @@ from app.core.database import get_db
 from app.core.pagination import Page, PageParams, page_params
 from app.core.responses import ApiResponse, ok
 from app.modules.auth.dependencies import CurrentPrincipal, require
-from app.modules.auth.permissions import Permission, Principal
+from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.users.model import User
 from app.modules.users.schema import (
-    PasswordReset, TemporaryPassword, UserCreate, UserCreated, UserRead, UserStats, UserStatus, UserUpdate,
+    PasswordReset, TemporaryPassword, UserAccess, UserCreate, UserCreated, UserRead, UserSort, UserStats, UserStatus,
+    UserUpdate,
 )
 from app.modules.users.service import UserService
 from app.modules.auth.step_up import StepUp
@@ -45,9 +46,9 @@ def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
 Service = Annotated[UserService, Depends(get_service)]
 
 
-def read(user: User, organization_name: str | None, branch_name: str | None) -> UserRead:
+def read(user: User, organization_name: str | None, branch_name: str | None, *, can_manage: bool = True) -> UserRead:
     return UserRead.model_validate(user).model_copy(
-        update={"organization_name": organization_name, "branch_name": branch_name}
+        update={"organization_name": organization_name, "branch_name": branch_name, "can_manage": can_manage}
     )
 
 
@@ -66,21 +67,30 @@ def list_users(
     page: Annotated[PageParams, Depends(page_params)],
     search: Annotated[str | None, Query(max_length=100)] = None,
     status: UserStatus | None = None,
+    role: Role | None = None,
+    organization_id: uuid.UUID | None = None,
+    branch_id: uuid.UUID | None = None,
+    access: UserAccess | None = None,
+    sort: UserSort = "name",
 ):
-    rows, total = service.list(principal, search=search, status=status, limit=page.limit, offset=page.offset)
-    return ok(Page(items=[read(*row) for row in rows], total=total, **page.model_dump()))
+    """The users the caller can list, searched (name, email, phone, organization, branch), filtered and sorted
+    by the server; `total` counts every match, for paging."""
+    rows, total = service.list(principal, search=(search or "").strip() or None, status=status, role=role,
+                               organization_id=organization_id, branch_id=branch_id, access=access, sort=sort,
+                               limit=page.limit, offset=page.offset)
+    return ok(Page(items=[read(*row, can_manage=service.can_manage(principal, row[0])) for row in rows],
+                   total=total, **page.model_dump()))
 
 
 @router.get("/stats", response_model=ApiResponse[UserStats])
 def user_stats(principal: UserAdmin, service: Service):
-    active, inactive = service.stats(principal)
-    return ok(UserStats(total=active + inactive, active=active, inactive=inactive))
+    return ok(UserStats(**service.stats(principal)))
 
 
 @router.get("/{user_id}", response_model=ApiResponse[UserRead])
 def get_user(user_id: uuid.UUID, principal: CurrentPrincipal, service: Service):
-    user = service.get(principal, user_id)
-    return ok(read(user, *service.names(user)))
+    user = service.view(principal, user_id)
+    return ok(read(user, *service.names(user), can_manage=service.can_manage(principal, user)))
 
 
 @router.patch("/{user_id}", response_model=ApiResponse[UserRead])

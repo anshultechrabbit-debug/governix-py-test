@@ -43,12 +43,16 @@ class BranchService:
             raise NotFoundError("Branch not found.")
         return branch
 
-    def list(self, principal: Principal, *, limit: int, offset: int) -> tuple[list[Branch], int]:
+    def list(self, principal: Principal, *, limit: int, offset: int, search: str | None = None,
+             is_active: bool | None = None, sort: str = "name") -> tuple[list[Branch], int]:
         return self.repository.list(
             tenant_id(principal),
             only_branch_id=self._visible_branch_filter(principal),
             limit=limit,
             offset=offset,
+            search=search,
+            is_active=is_active,
+            sort=sort,
         )
 
     def update(self, principal: Principal, branch_id: uuid.UUID, data: BranchUpdate) -> Branch:

@@ -33,9 +33,14 @@ def create_branch(body: BranchCreate, principal: BranchAdmin, service: Service):
 
 @router.get("", response_model=ApiResponse[Page[BranchRead]])
 def list_branches(
-    principal: CurrentPrincipal, service: Service, page: Annotated[PageParams, Depends(page_params)]
+    principal: CurrentPrincipal, service: Service, page: Annotated[PageParams, Depends(page_params)],
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    status: Annotated[str | None, Query(pattern="^(active|inactive)$")] = None,
+    sort: Annotated[str, Query(pattern="^-?(name|code|created)$")] = "name",
 ):
-    items, total = service.list(principal, limit=page.limit, offset=page.offset)
+    """The caller's branches, searched (name, code, state, postal code), filtered and sorted by the server."""
+    items, total = service.list(principal, limit=page.limit, offset=page.offset, search=(search or "").strip() or None,
+                                is_active=None if status is None else status == "active", sort=sort)
     return ok(Page(items=[BranchRead.model_validate(b) for b in items], total=total, **page.model_dump()))
 
 

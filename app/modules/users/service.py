@@ -159,12 +159,24 @@ class UserService:
             raise NotFoundError("User not found.")
         return user
 
+    def can_manage(self, principal: Principal, user: User) -> bool:
+        """Whether the principal may change this user (edit, deactivate, delete, reset); else it is read only."""
+        return user.id != principal.user_id and self._can_manage(principal, user)
+
+    def view(self, principal: Principal, user_id: uuid.UUID) -> User:
+        """One user to look at: the Master Admin sees everyone on the platform (read only beyond the
+        Organization Admins and support staff it manages); everyone else, the people they manage."""
+        user = self.repository.get(user_id)
+        if user is not None and user.deleted_at is None and principal.role is Role.MASTER_ADMIN:
+            return user
+        return self.get(principal, user_id)
+
     @staticmethod
     def _list_scope(principal: Principal) -> dict:
         if principal.role is Role.MASTER_ADMIN:
-            # Every organization's admins, and the platform administrators themselves.
-            return {"organization_id": None, "branch_id": None,
-                    "roles": frozenset({Role.ORG_ADMIN, Role.MASTER_ADMIN, Role.SUPPORT_AGENT})}
+            # Everyone on the platform. It manages Organization Admins and support staff; the rest
+            # (Branch Managers, Users, other Master Admins) it sees read only (`can_manage` per user).
+            return {"organization_id": None, "branch_id": None, "roles": None}
         # The people the principal manages: an Organization Admin's Branch Managers, a Branch
         # Manager's Users.
         return {
@@ -175,19 +187,52 @@ class UserService:
 
     def list(
         self, principal: Principal, *, search: str | None, status: UserStatus | None = None,
-        limit: int, offset: int,
+        role: Role | None = None, organization_id: uuid.UUID | None = None, branch_id: uuid.UUID | None = None,
+        access: str | None = None, sort: str = "name", limit: int, offset: int,
     ) -> tuple[list[tuple[User, str | None, str | None]], int]:
         return self.repository.list(
             **self._list_scope(principal),
             search=search,
             is_active=None if status is None else status == "active",
+            only_roles=self._roles_for(principal, role, access),
+            in_organization=organization_id,
+            in_branch=branch_id,
+            sort=sort,
             limit=limit,
             offset=offset,
         )
 
-    def stats(self, principal: Principal) -> tuple[int, int]:
-        """(active, inactive) users the principal can list, ignoring search and filters."""
-        return self.repository.count_by_status(**self._list_scope(principal))
+    @staticmethod
+    def _roles_for(principal: Principal, role: Role | None, access: str | None) -> frozenset[str] | None:
+        """The roles a filter leaves: one role, and/or the ones the caller manages ("manage") or only sees
+        ("read_only"). None: no narrowing."""
+        if role is None and access is None:
+            return None
+        every = frozenset(r.value for r in Role)
+        chosen = frozenset({Role(role).value}) if role is not None else every
+        managed = frozenset(r.value for r in ASSIGNABLE_ROLES[principal.role])
+        if access == "manage":
+            chosen &= managed
+        elif access == "read_only":
+            chosen -= managed
+        return chosen
+
+    def stats(self, principal: Principal) -> dict:
+        """Counts of the users the principal can list, ignoring search and filters: by status and role, the
+        privileged ones, the organizations they belong to, and how many it may change."""
+        counts, organizations = self.repository.counts(**self._list_scope(principal))
+        by_role: dict[str, int] = {}
+        for (role, _active), n in counts.items():
+            by_role[role] = by_role.get(role, 0) + n
+        managed = {r.value for r in ASSIGNABLE_ROLES[principal.role]}
+        active = sum(n for (_, is_active), n in counts.items() if is_active)
+        inactive = sum(n for (_, is_active), n in counts.items() if not is_active)
+        return {
+            "total": active + inactive, "active": active, "inactive": inactive, "by_role": by_role,
+            "privileged": by_role.get(Role.MASTER_ADMIN.value, 0) + by_role.get(Role.ORG_ADMIN.value, 0),
+            "organizations": organizations,
+            "manageable": sum(n for role, n in by_role.items() if role in managed),
+        }
 
     def names(self, user: User) -> tuple[str | None, str | None]:
         """The user's organization and branch names."""

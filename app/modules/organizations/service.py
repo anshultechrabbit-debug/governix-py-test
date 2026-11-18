@@ -147,8 +147,9 @@ class OrganizationService:
             raise NotFoundError("Organization not found.")
         return organization
 
-    def list(self, *, limit: int, offset: int) -> tuple[list[Organization], int]:
-        return self.repository.list(limit=limit, offset=offset)
+    def list(self, *, limit: int, offset: int, search: str | None = None, status: str | None = None,
+             sort: str = "name") -> tuple[list[Organization], int]:
+        return self.repository.list(limit=limit, offset=offset, search=search, status=status, sort=sort)
 
     def update(
         self, principal: Principal, organization_id: uuid.UUID, data: OrganizationUpdate

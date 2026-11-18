@@ -51,9 +51,14 @@ def create_organization(body: OrganizationCreate, principal: MasterAdmin, servic
 
 @router.get("", response_model=ApiResponse[Page[OrganizationRead]])
 def list_organizations(
-    principal: MasterAdmin, service: Service, page: Annotated[PageParams, Depends(page_params)]
+    principal: MasterAdmin, service: Service, page: Annotated[PageParams, Depends(page_params)],
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    status: Annotated[str | None, Query(pattern="^(active|suspended)$")] = None,
+    sort: Annotated[str, Query(pattern="^-?(name|created|port|status)$")] = "name",
 ):
-    items, total = service.list(limit=page.limit, offset=page.offset)
+    """Organizations searched (name, slug, contact email, port), filtered and sorted by the server."""
+    items, total = service.list(limit=page.limit, offset=page.offset, search=(search or "").strip() or None,
+                                status=status, sort=sort)
     return ok(Page(items=[organization_read(o) for o in items], total=total, **page.model_dump()))
 
 

@@ -12,7 +12,7 @@ from app.modules.audit.describe import describe
 from app.modules.audit.repository import AuditRepository
 from app.modules.audit.schema import AuditEventRead
 from app.modules.auth.dependencies import require
-from app.modules.auth.permissions import Permission, Principal
+from app.modules.auth.permissions import Permission, Principal, Role
 
 router = APIRouter(prefix="/audit-events", tags=["audit"])
 
@@ -38,10 +38,16 @@ def list_audit_events(
     actor_user_id: uuid.UUID | None = None,
     since: datetime | None = None,
     organization_id: uuid.UUID | None = None,  # master admin only
+    search: Annotated[str | None, Query(max_length=100)] = None,
+    actor_role: Role | None = None,
 ):
+    """Audit events, newest first: searched (actor name/email, action, resource, organization) and filtered by
+    the server, so every page and count covers the whole log."""
     scope, every = _scope(principal, organization_id)
     items, total = AuditRepository(db).list(
         scope,
+        search=(search or "").strip() or None,
+        actor_role=actor_role.value if actor_role else None,
         every_organization=every,
         action=action,
         resource_type=resource_type,

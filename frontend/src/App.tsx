@@ -109,6 +109,10 @@ export function App() {
           <Route path="support/staff" element={<Guard permission="support:staff"><SupportStaffPage /></Guard>} />
           <Route path="support/:id" element={<Guard permission="support"><TicketPage /></Guard>} />
 
+          {/* AI usage alerts link to the admin panel's AI pages; here they open the closest page. */}
+          <Route path="masteradmin/organization/:id/ai" element={<Navigate to="/organizations" replace />} />
+          <Route path="organizationadmin/ai-usage" element={<Navigate to="/" replace />} />
+
           <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Routes>

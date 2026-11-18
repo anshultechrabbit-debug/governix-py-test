@@ -67,6 +67,8 @@ class UserRead(BaseModel):
     mfa_enabled: bool = False
     last_login_at: datetime | None
     created_at: datetime
+    # The caller may change this user (edit, deactivate, delete, reset). False: shown read only.
+    can_manage: bool = True
 
 
 class UserCreated(UserRead, TemporaryPassword):
@@ -74,9 +76,21 @@ class UserCreated(UserRead, TemporaryPassword):
 
 
 UserStatus = Literal["active", "inactive"]
+UserSort = Literal["name", "-name", "email", "-email", "created", "-created", "last_login", "-last_login",
+                   "organization", "-organization", "role", "-role"]
+# "manage": users the caller may change; "read_only": the ones it only sees.
+UserAccess = Literal["manage", "read_only"]
 
 
 class UserStats(BaseModel):
     total: int
     active: int
     inactive: int
+    # Users of each role (all statuses), e.g. {"org_admin": 12, "department_user": 30}.
+    by_role: dict[str, int] = {}
+    # Master Admins and Organization Admins.
+    privileged: int = 0
+    # Organizations the listed users belong to.
+    organizations: int = 0
+    # Users the caller may change; the rest it sees read only.
+    manageable: int = 0
