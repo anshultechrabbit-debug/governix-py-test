@@ -247,6 +247,23 @@ API key vault, models, question limit, token limits, credit budget, alerts. Tabl
   highest only). Recipients: Master Admins (link to the AI page) and the organization's Org Admins.
 - Tests: `app/tests/integration/test_ai_management.py`.
 
+## Email / SMTP (2026-11-18, `app/modules/email/`, `/settings/email`, migration `b7c4d2e9f1a3`)
+
+- The Master Admin sets the mail server in the panel (Settings › Email, `/masteradmin/settings`): host, port,
+  STARTTLS/SSL, username, password (Fernet via `auth.mfa.encrypt`, never returned), sender, reply-to, the portal
+  address used in links, and which emails go out. Stored in `platform_settings` (key `email`). Saving needs step-up.
+  Until it is saved, the `SMTP_*` lines of `.env` apply; saved but switched off means no email at all.
+- Every email goes through `email.service`: `account_created` (users and support staff, with the temporary
+  password unless switched off), `password_reset_by_admin`, `two_step_reset`, `password_changed`,
+  `forgot_password` (always on), and email copies of in-app notifications (`notify()` →
+  `queue_notification_emails`, sent on the session's `after_commit`, dropped on rollback; per-type switches,
+  defaults in `email.schema.NOTIFICATION_EVENTS`).
+- Links point at the person's portal: their bank's port on the portal host (or `<slug>.<NGINX_BASE_DOMAIN>`), the
+  main portal for platform staff. Sending runs on a 2-thread pool and never fails a request. Settings are read in
+  a session of their own (cached 15 s), so a missing table or a bad read never breaks the caller's transaction.
+- `POST /settings/email/test` sends at once with the form as it is and reports the server's answer.
+- Tests: `app/tests/integration/test_email_settings.py`.
+
 ## Answer pipeline (`app/modules/rag/service.py`, `RAGService.answer_events`)
 
 1. Standalone rewrite.

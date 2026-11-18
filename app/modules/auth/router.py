@@ -1,8 +1,7 @@
 from typing import Annotated
 
-from urllib.parse import urlencode
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
@@ -12,7 +11,7 @@ from app.core.exceptions import AuthenticationError
 from app.core.security import MFA_STEP_EXPIRED
 from app.core.rate_limit import RateLimiter
 from app.core.responses import ApiResponse, error_response, ok
-from app.infrastructure.mail.smtp import send_email
+from app.modules.email import service as email
 from app.modules.auth.cookies import (
     CSRF_COOKIE,
     MFA_COOKIE,
@@ -177,12 +176,16 @@ def change_password(
 ):
     service.change_password(principal, body.current_password, body.new_password)
     clear_auth_cookies(response, request, settings)  # every session has just ended, this one too
+    from app.modules.users.model import User
+
+    if (user := service.session.get(User, principal.user_id)) is not None:
+        email.password_changed(service.session, settings, user)
     return ok({})
 
 
 @router.post("/forgot-password", response_model=ApiResponse[Message])
 def forgot_password(
-    body: ForgotPasswordRequest, request: Request, background: BackgroundTasks, service: Service,
+    body: ForgotPasswordRequest, request: Request, service: Service,
     settings: AppSettings,
 ):
     """Email a single-use reset link. The answer is the same whether or not the email is registered."""
@@ -191,17 +194,8 @@ def forgot_password(
     issued = service.forgot_password(body.email)
     if issued is not None:
         user, token = issued
-        link = f"{settings.PASSWORD_RESET_URL}?{urlencode({'token': token})}"
-        background.add_task(
-            send_email, settings, to=user.email, subject=f"Reset your {settings.APP_NAME} password",
-            body=(
-                f"Hello {user.full_name},\n\n"
-                f"We received a request to reset your {settings.APP_NAME} password. Open this link within "
-                f"{settings.PASSWORD_RESET_TTL_MINUTES} minutes to choose a new one:\n\n{link}\n\n"
-                "The link works once. If you did not ask for this, ignore this email: your password stays"
-                " the same.\n"
-            ),
-        )
+        # The reset page of the person's own portal (their bank's port), sent through Settings › Email.
+        email.forgot_password(service.session, settings, user, email.reset_link(service.session, settings, user, token))
     return ok(Message(message=RESET_SENT))
 
 

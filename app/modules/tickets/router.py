@@ -26,6 +26,8 @@ from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.infrastructure.ai.llm.base import LLMUnavailableError
 from app.modules.ai_management.runtime import organization_llm
+from app.modules.email import service as email
+from app.modules.users.model import User
 from app.modules.tickets.model import (
     CategoryRoute, StaffAvailability, StaffRole, TicketLevel, TicketPriority, TicketStatus, TicketTeam,
 )
@@ -599,7 +601,7 @@ def list_staff(principal: StaffManager, staff: StaffServiceDep, level: TicketLev
 
 @staff_router.post("", response_model=ApiResponse[StaffCreated], status_code=201, responses=_errors(403, 409, 422))
 def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep, service: Service,
-              confirm_code: StepUp):
+              confirm_code: StepUp, settings: Annotated[Settings, Depends(get_app_settings)]):
     """Create a support staff account and put it on duty, with its skills, capacity and availability; its
     temporary password is returned once. A bank's staff are in that bank (and branch); Governix's have no bank.
     Tickets waiting unassigned in the queue go to them by workload. Needs an authenticator code: support staff
@@ -611,6 +613,8 @@ def add_staff(body: StaffCreate, principal: StaffManager, staff: StaffServiceDep
         serves=body.serves,
     )
     service.assign_waiting(principal, created.level, created.organization_id, created.branch_id)
+    if (account := staff.session.get(User, created.user_id)) is not None:
+        email.account_created(staff.session, settings, account, password)
     return ok(StaffCreated(**_staff(staff.view(principal, created.id)), temporary_password=password))
 
 
@@ -652,11 +656,16 @@ class StaffPassword(BaseModel):
 
 
 @staff_router.post("/{staff_id}/reset-password", response_model=ApiResponse[StaffPassword], responses=_errors(403, 404, 422))
-def reset_staff_password(staff_id: uuid.UUID, principal: StaffManager, staff: StaffServiceDep, confirm_code: StepUp):
+def reset_staff_password(staff_id: uuid.UUID, principal: StaffManager, staff: StaffServiceDep, confirm_code: StepUp,
+                         settings: Annotated[Settings, Depends(get_app_settings)]):
     """A new temporary password for a support staff account (returned once); they are signed out everywhere.
     The managers who see the profile may do it. Needs an authenticator code, like any password reset."""
     confirm_code("user.password_reset")
-    return ok(StaffPassword(temporary_password=staff.reset_password(principal, staff_id)))
+    password = staff.reset_password(principal, staff_id)
+    profile = staff._get(principal, staff_id)
+    if (account := staff.session.get(User, profile.user_id)) is not None:
+        email.password_reset_by_admin(staff.session, settings, account, password)
+    return ok(StaffPassword(temporary_password=password))
 
 
 @staff_router.post("/{staff_id}/reassign", response_model=ApiResponse[Reassigned], responses=_errors(403, 404))

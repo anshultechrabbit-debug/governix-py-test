@@ -14,6 +14,7 @@ back never notifies. A dedupe key makes repeated delivery (job retries, the
 daily sweep) a no-op.
 """
 
+import logging
 import uuid
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
@@ -32,6 +33,8 @@ from app.modules.users.model import User
 EXPIRY_NOTICE_DAYS = 30
 # How long after expiry an "expired" notice is still worth sending (e.g. after downtime).
 EXPIRED_NOTICE_WINDOW_DAYS = 7
+
+logger = logging.getLogger(__name__)
 
 
 def notify(
@@ -59,8 +62,18 @@ def notify(
     ]
     statement = insert(Notification).values(rows).on_conflict_do_nothing(
         index_elements=["user_id", "dedupe_key"], index_where=text("dedupe_key IS NOT NULL"),
-    ).returning(Notification.id)
-    return len(session.execute(statement).all())
+    ).returning(Notification.user_id)
+    created = [row[0] for row in session.execute(statement).all()]
+    # An email copy for those who just got it (not for a duplicate), if that kind of email is on in
+    # Settings › Email; sent once the caller's transaction commits.
+    from app.core.config import get_settings
+    from app.modules.email.service import queue_notification_emails
+
+    try:
+        queue_notification_emails(session, get_settings(), type_, created, title, body, link)
+    except Exception:  # an email copy never fails the notification
+        logger.exception("Could not queue notification emails")
+    return len(created)
 
 
 # --- audiences -----------------------------------------------------------------

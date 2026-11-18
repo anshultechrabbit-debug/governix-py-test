@@ -15,6 +15,9 @@ from app.modules.users.schema import (
     UserUpdate,
 )
 from app.modules.users.service import UserService
+from app.core.config import Settings
+from app.core.dependencies import get_app_settings
+from app.modules.email import service as email
 from app.modules.auth.step_up import StepUp
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -44,6 +47,7 @@ def get_service(db: Annotated[Session, Depends(get_db)]) -> UserService:
 
 
 Service = Annotated[UserService, Depends(get_service)]
+AppSettings = Annotated[Settings, Depends(get_app_settings)]
 
 
 def read(user: User, organization_name: str | None, branch_name: str | None, *, can_manage: bool = True) -> UserRead:
@@ -53,9 +57,11 @@ def read(user: User, organization_name: str | None, branch_name: str | None, *, 
 
 
 @router.post("", response_model=ApiResponse[UserCreated], status_code=201)
-def create_user(body: UserCreate, principal: UserAdmin, service: Service, confirm_code: StepUp):
+def create_user(body: UserCreate, principal: UserAdmin, service: Service, confirm_code: StepUp,
+                settings: AppSettings):
     confirm_code("user.create")
     user, temporary_password = service.create(principal, body)
+    email.account_created(service.session, settings, user, temporary_password)
     created = read(user, *service.names(user))
     return ok(UserCreated(**created.model_dump(), temporary_password=temporary_password))
 
@@ -110,14 +116,18 @@ def delete_user(user_id: uuid.UUID, principal: UserAdmin, service: Service, conf
 
 @router.post("/{user_id}/reset-password", response_model=ApiResponse[TemporaryPassword])
 def reset_password(user_id: uuid.UUID, body: PasswordReset, principal: UserAdmin, service: Service,
-                   confirm_code: StepUp):
+                   confirm_code: StepUp, settings: AppSettings):
     confirm_code("user.password_reset")
-    return ok(TemporaryPassword(temporary_password=service.reset_password(principal, user_id, body.new_password)))
+    password = service.reset_password(principal, user_id, body.new_password)
+    email.password_reset_by_admin(service.session, settings, service.get(principal, user_id), password)
+    return ok(TemporaryPassword(temporary_password=password))
 
 
 @router.post("/{user_id}/reset-mfa", response_model=ApiResponse[UserRead])
-def reset_mfa(user_id: uuid.UUID, principal: UserAdmin, service: Service, confirm_code: StepUp):
+def reset_mfa(user_id: uuid.UUID, principal: UserAdmin, service: Service, confirm_code: StepUp,
+              settings: AppSettings):
     """Turn off a user's two-step sign-in (lost phone). They are signed out everywhere and may set it up again."""
     confirm_code("user.mfa_reset")
     user = service.reset_mfa(principal, user_id)
+    email.two_step_reset(service.session, settings, user)
     return ok(read(user, *service.names(user)))

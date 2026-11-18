@@ -10,6 +10,7 @@ def import_all_models() -> None:
     import app.infrastructure.queue.models  # noqa: F401
     import app.modules.ai_usage.model  # noqa: F401
     import app.modules.ai_management.model  # noqa: F401
+    import app.modules.email.model  # noqa: F401
     import app.modules.assignments.model  # noqa: F401
     import app.modules.audit.model  # noqa: F401
     import app.modules.auth.model  # noqa: F401
