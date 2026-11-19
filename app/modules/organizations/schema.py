@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.core.config import get_settings
 from app.modules.organizations.model import OrganizationStatus
-from app.core.inputs import AtMost, MaybeText, Name, NewPassword, PersonName, Phone, Website
+from app.core.inputs import AtMost, Domain, MaybeText, Name, NewPassword, PersonName, Phone, Website
 
 SLUG_PATTERN = r"^[a-z0-9][a-z0-9-]{1,98}[a-z0-9]$"
 COLOR_PATTERN = r"^#[0-9a-fA-F]{6}$"
@@ -27,6 +27,8 @@ class Branding(BaseModel):
     address: Annotated[MaybeText, AtMost(2000)] = None
     # Checked against TENANT_PORT_MIN..MAX and other organizations by the service.
     allowed_port: int | None = None
+    # The bank's own portal address (portal.bank.com); unique. Live after a deploy in Organizations > Nginx.
+    custom_domain: Domain = None
 
     @field_validator("brand_font")
     @classmethod
@@ -71,6 +73,7 @@ class OrganizationRead(BaseModel):
     address: str | None = None
     brand_font: str | None = None
     allowed_port: int | None = None
+    custom_domain: str | None = None
     has_logo: bool = False
     # The logo as the browser loads it (<img src>; the session cookie authorises it), or None.
     # `v` changes when the organisation is saved, so a new logo is not served from the browser cache.

@@ -18,9 +18,11 @@ class NginxSite(BaseModel):
     # Where the file is, or would be written.
     config_file: str | None
     deployed_at: datetime | None
-    # Host names it is served on besides its port (<slug>.<NGINX_BASE_DOMAIN>); empty when that is not set.
+    # Host names it is served on besides its port: its custom domain, then <slug>.<NGINX_BASE_DOMAIN>.
     domains: list[str] = []
-    # A certificate exists, so the domains are served over https.
+    # The bank's own domain (also in `domains`), set on the organization; None when it has none.
+    custom_domain: str | None = None
+    # Every domain has a certificate, so all are served over https.
     https: bool = False
     # Where to open it: its domains first ("https://hdfc.governix.example.com"), then its port on
     # NGINX_PUBLIC_HOST ("http://89.116.122.215:7003").

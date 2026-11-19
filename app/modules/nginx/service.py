@@ -2,8 +2,11 @@
 
 Each organization with an allowed_port gets `governix-<slug>.conf` in NGINX_CONF_DIR, holding:
 - a server block on its port (organizations are told apart by port);
-- with NGINX_BASE_DOMAIN set, a server block for its domain `<slug>.<NGINX_BASE_DOMAIN>` on NGINX_DOMAIN_PORT,
-  and once a certificate exists (NGINX_CERTBOT_COMMAND), the domain on 443 with http redirecting to it.
+- with a custom_domain (the bank's own, portal.bank.com), a server block for it on NGINX_DOMAIN_PORT;
+- with NGINX_BASE_DOMAIN set, a server block for `<slug>.<NGINX_BASE_DOMAIN>` on NGINX_DOMAIN_PORT;
+- once a domain has a certificate (NGINX_CERTBOT_COMMAND), that domain on 443 with http redirecting to it.
+Each domain has its own certificate (`governix-<custom domain>`, `governix-<slug>`), so a new custom domain gets a
+new certificate instead of being served with the old one.
 Every block serves the built frontend and forwards /api to this backend.
 
 The files are the state: present is deployed, `.disabled` is switched off, and a file that differs from what the
@@ -29,11 +32,12 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.core.exceptions import NotFoundError, ServiceUnavailableError, ValidationError
+from app.core.exceptions import ConflictError, NotFoundError, ServiceUnavailableError, ValidationError
 from app.modules.audit.service import record_event
 from app.modules.auth.permissions import Principal
 from app.modules.nginx.schema import NginxDetail, NginxOverview, NginxSite
 from app.modules.organizations.model import Organization
+from app.modules.organizations.ports import port_in_use
 from app.modules.organizations.repository import OrganizationRepository
 
 COMMAND_TIMEOUT_SECONDS = 30
@@ -121,22 +125,35 @@ class NginxService:
         directory = self.settings.NGINX_ENABLED_DIR
         return directory if directory is not None and directory.is_dir() else None
 
-    def domains(self, organization: Organization) -> list[str]:
-        """The host names the organization is served on besides its port."""
+    def domain_groups(self, organization: Organization) -> list[tuple[str, str]]:
+        """(certificate name, host name) for each address the organization is served on besides its port: its own
+        custom domain first, then <slug>.<NGINX_BASE_DOMAIN>."""
+        groups = []
+        if organization.custom_domain:
+            groups.append((f"governix-{organization.custom_domain}", organization.custom_domain))
         base = self.settings.NGINX_BASE_DOMAIN
         if base and _DNS_LABEL.fullmatch(organization.slug):
-            return [f"{organization.slug}.{base}"]
-        return []
+            groups.append((f"governix-{organization.slug}", f"{organization.slug}.{base}"))
+        return groups
 
-    def cert_dir(self, organization: Organization) -> Path:
-        return self.settings.NGINX_CERT_DIR / f"governix-{organization.slug}"
+    def domains(self, organization: Organization) -> list[str]:
+        """The host names the organization is served on besides its port."""
+        return [domain for _, domain in self.domain_groups(organization)]
 
-    def has_certificate(self, organization: Organization) -> bool:
-        directory = self.cert_dir(organization)
+    def cert_dir(self, cert_name: str) -> Path:
+        return self.settings.NGINX_CERT_DIR / cert_name
+
+    def _has_cert(self, cert_name: str) -> bool:
+        directory = self.cert_dir(cert_name)
         try:
             return (directory / "fullchain.pem").is_file() and (directory / "privkey.pem").is_file()
         except OSError:  # /etc/letsencrypt is root's: no access reads as no certificate
             return False
+
+    def has_certificate(self, organization: Organization) -> bool:
+        """Every domain it has is served over https."""
+        groups = self.domain_groups(organization)
+        return bool(groups) and all(self._has_cert(name) for name, _ in groups)
 
     def render(self, organization: Organization) -> str | None:
         if organization.allowed_port is None:
@@ -153,22 +170,21 @@ class NginxService:
             "# Its own port.",
             _server([str(port), f"[::]:{port}"], self.settings.NGINX_SERVER_NAME, body),
         ]
-        domains = self.domains(organization)
-        if domains:
-            names = " ".join(domains)
-            http = self.settings.NGINX_DOMAIN_PORT
-            if self.has_certificate(organization):
-                cert = self.cert_dir(organization)
+        http = self.settings.NGINX_DOMAIN_PORT
+        for cert_name, domain in self.domain_groups(organization):
+            label = "Its own domain" if domain == organization.custom_domain else "Its domain"
+            if self._has_cert(cert_name):
+                cert = self.cert_dir(cert_name)
                 parts += [
-                    "# Its domain: http goes to https.",
-                    _server([str(http), f"[::]:{http}"], names, "    return 301 https://$host$request_uri;\n"),
-                    "# Its domain over https.",
-                    _server(["443 ssl", "[::]:443 ssl"], names,
+                    f"# {label}: http goes to https.",
+                    _server([str(http), f"[::]:{http}"], domain, "    return 301 https://$host$request_uri;\n"),
+                    f"# {label} over https.",
+                    _server(["443 ssl", "[::]:443 ssl"], domain,
                             f"    ssl_certificate {cert}/fullchain.pem;\n"
                             f"    ssl_certificate_key {cert}/privkey.pem;\n\n" + body),
                 ]
             else:
-                parts += ["# Its domain.", _server([str(http), f"[::]:{http}"], names, body)]
+                parts += [f"# {label}.", _server([str(http), f"[::]:{http}"], domain, body)]
         return "\n".join(parts)
 
     def _files(self, organization: Organization) -> tuple[Path, Path] | None:
@@ -182,9 +198,13 @@ class NginxService:
         return self.enabled_dir / live.name if self.enabled_dir is not None else None
 
     def _urls(self, organization: Organization) -> list[str]:
-        scheme = "https" if self.has_certificate(organization) else "http"
-        port = "" if scheme == "https" or self.settings.NGINX_DOMAIN_PORT == 80 else f":{self.settings.NGINX_DOMAIN_PORT}"
-        urls = [f"{scheme}://{domain}{port}" for domain in self.domains(organization)]
+        urls = []
+        for cert_name, domain in self.domain_groups(organization):
+            if self._has_cert(cert_name):
+                urls.append(f"https://{domain}")
+            else:
+                port = "" if self.settings.NGINX_DOMAIN_PORT == 80 else f":{self.settings.NGINX_DOMAIN_PORT}"
+                urls.append(f"http://{domain}{port}")
         # Its port on the server's public address (IP-based setups): always plain http.
         if self.settings.NGINX_PUBLIC_HOST and organization.allowed_port is not None:
             urls.append(f"http://{self.settings.NGINX_PUBLIC_HOST}:{organization.allowed_port}")
@@ -195,7 +215,8 @@ class NginxService:
         configured_dir = self.settings.NGINX_CONF_DIR
         common = {
             "organization_id": organization.id, "port": organization.allowed_port,
-            "domains": self.domains(organization), "https": self.has_certificate(organization),
+            "domains": self.domains(organization), "custom_domain": organization.custom_domain,
+            "https": self.has_certificate(organization),
             "urls": self._urls(organization),
         }
         if files is None:
@@ -257,11 +278,18 @@ class NginxService:
             )
         warning = None
         with _locked(live.parent):
+            # Not live yet, so nginx does not hold the port for it: anything listening there is someone else.
+            # nginx would fail to bind it while `nginx -s reload` still reports success.
+            if (not live.exists() and self.settings.TENANT_PORT_CHECK_SERVER
+                    and port_in_use(organization.allowed_port)):
+                raise ConflictError(
+                    f"Port {organization.allowed_port} is already in use on this server (another program or another "
+                    f"nginx site). Give {organization.name} another port in Edit, then deploy.", code="PORT_IN_USE",
+                )
             self._go_live(live, self.render(organization))
             disabled.unlink(missing_ok=True)
-            domains = self.domains(organization)
-            if domains and self.settings.NGINX_CERTBOT_COMMAND and not self.has_certificate(organization):
-                warning = self._certify(organization, live, domains)
+            if self.settings.NGINX_CERTBOT_COMMAND:
+                warning = self._certify(organization, live)
         record_event(
             self.session, "organization.nginx_deployed", actor=principal, organization_id=organization.id,
             resource_type="organization", resource_id=organization.id,
@@ -320,24 +348,28 @@ class NginxService:
                 link.unlink(missing_ok=True)
             raise
 
-    def _certify(self, organization: Organization, live: Path, domains: list[str]) -> str | None:
-        """Ask certbot for the domain's certificate, then serve it over https. The site stays live on http
-        whatever happens; the returned text says why https is not on."""
-        command = [*shlex.split(self.settings.NGINX_CERTBOT_COMMAND), "--cert-name",
-                   f"governix-{organization.slug}"]
-        for domain in domains:
-            command += ["-d", domain]
-        succeeded, output = _run_args(command, timeout=CERTBOT_TIMEOUT_SECONDS)
-        if not succeeded:
-            return f"The site is live on http, but no certificate was issued: {output}"
-        if not self.has_certificate(organization):
-            return (f"certbot finished, but no certificate is readable in {self.cert_dir(organization)}; "
-                    "the site is live on http.")
-        try:
-            self._go_live(live, self.render(organization))
-        except ServiceUnavailableError as exc:
-            return f"The certificate was issued, but nginx refused the https configuration: {exc.message}"
-        return None
+    def _certify(self, organization: Organization, live: Path) -> str | None:
+        """Ask certbot for a certificate for each domain that has none, then serve those over https. The site stays
+        live on http whatever happens; the returned text says why https is not on for a domain."""
+        problems, issued = [], False
+        for cert_name, domain in self.domain_groups(organization):
+            if self._has_cert(cert_name):
+                continue
+            command = [*shlex.split(self.settings.NGINX_CERTBOT_COMMAND), "--cert-name", cert_name, "-d", domain]
+            succeeded, output = _run_args(command, timeout=CERTBOT_TIMEOUT_SECONDS)
+            if not succeeded:
+                problems.append(f"{domain} is live on http, but no certificate was issued: {output}")
+            elif not self._has_cert(cert_name):
+                problems.append(f"certbot finished, but no certificate for {domain} is readable in "
+                                f"{self.cert_dir(cert_name)}; it is live on http.")
+            else:
+                issued = True
+        if issued:
+            try:
+                self._go_live(live, self.render(organization))
+            except ServiceUnavailableError as exc:
+                problems.append(f"The certificate was issued, but nginx refused the https configuration: {exc.message}")
+        return " ".join(problems) or None
 
     def _require_files(self, organization: Organization) -> tuple[Path, Path]:
         files = self._files(organization)

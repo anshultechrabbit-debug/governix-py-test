@@ -1,7 +1,7 @@
 """Which organization a portal address belongs to, for its sign-in page (public: no session yet).
 
-A bank's portal is reached on its port (http://server:7003) or, with NGINX_BASE_DOMAIN, on its domain
-(https://hdfc.governix.example.com, port 80/443). The page asks `GET /tenant-info?port=&host=`; the domain wins over
+A bank's portal is reached on its port (http://server:7003), on its own domain (custom_domain, e.g.
+https://portal.hdfc.com) or, with NGINX_BASE_DOMAIN, on https://hdfc.governix.example.com (port 80/443). The page asks `GET /tenant-info?port=&host=`; the domain wins over
 the port, because on a domain the port is just 80 or 443. Only what the sign-in page shows is returned (name, colors,
 font, logo); a suspended or deleted organization is not found.
 """
@@ -49,6 +49,10 @@ def find_tenant(db: Session, settings: Settings, *, host: str | None, port: int 
     live = (Organization.deleted_at.is_(None), Organization.status == OrganizationStatus.ACTIVE)
     base = settings.NGINX_BASE_DOMAIN
     host = _host(host)
+    if host:
+        organization = db.scalar(select(Organization).where(Organization.custom_domain == host, *live))
+        if organization is not None:
+            return organization
     if base and host.endswith(f".{base}"):
         slug = host[: -len(base) - 1]
         organization = db.scalar(select(Organization).where(Organization.slug == slug, *live))
@@ -57,6 +61,14 @@ def find_tenant(db: Session, settings: Settings, *, host: str | None, port: int 
     if port is not None:
         return db.scalar(select(Organization).where(Organization.allowed_port == port, *live))
     return None
+
+
+def portal_domain(organization: Organization, settings: Settings) -> str | None:
+    """The address its portal is announced on: its own domain first, else <slug>.<NGINX_BASE_DOMAIN>."""
+    if organization.custom_domain:
+        return organization.custom_domain
+    base = settings.NGINX_BASE_DOMAIN
+    return f"{organization.slug}.{base}" if base else None
 
 
 def _found(db: Session, settings: Settings, request: Request, host: str | None, port: int | None) -> Organization:
@@ -83,19 +95,19 @@ def tenant_info(
     host: Host = None,
 ):
     organization = _found(db, settings, request, host, port)
-    base = settings.NGINX_BASE_DOMAIN
+    domain = portal_domain(organization, settings)
     logo = None
     if organization.logo_key is not None:
         query = {"v": int(organization.updated_at.timestamp())}
         if organization.allowed_port is not None:
             query["port"] = organization.allowed_port
-        if base:
-            query["host"] = f"{organization.slug}.{base}"
+        if domain:
+            query["host"] = domain
         logo = f"{settings.API_PUBLIC_PREFIX.rstrip('/')}/tenant-info/logo?{urlencode(query)}"
     return ok(TenantInfo(
         id=organization.id, name=organization.name, slug=organization.slug, status=organization.status,
         allowed_port=organization.allowed_port, port=organization.allowed_port,
-        domain=f"{organization.slug}.{base}" if base else None,
+        domain=domain,
         primary_color=organization.primary_color, secondary_color=organization.secondary_color,
         brand_font=organization.brand_font, logo_url=logo,
     ))

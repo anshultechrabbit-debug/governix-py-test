@@ -167,6 +167,9 @@ class Settings(BaseSettings):
     # PORT_RANGE_MIN; a new organization without a port gets the lowest free one.
     TENANT_PORT_MIN: int = 7003
     TENANT_PORT_MAX: int = 7100
+    # A port something on this server already listens on is never given to an organization (auto-picked or typed),
+    # and Deploy refuses it. Turn off only where the API runs on a different machine than nginx.
+    TENANT_PORT_CHECK_SERVER: bool = True
 
     # nginx (Organizations → Nginx): each organization's port gets a server block that serves the
     # built frontend and forwards /api to this backend. NGINX_CONF_DIR is a folder nginx includes

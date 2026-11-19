@@ -125,3 +125,41 @@ def test_ip_based_setup_links_the_port(master, bank, settings):
     assert data["state"] == "deployed" and data["domains"] == []
     assert data["urls"] == ["http://89.116.122.215:7003"]
     assert "listen 80;" not in data["config"]
+
+
+def test_custom_domain_is_served_with_its_own_certificate(tmp_path, client, master, bank, dirs, settings):
+    settings.NGINX_CERTBOT_COMMAND = fake_certbot(tmp_path, dirs["certs"])
+    saved = master.patch(f"/organizations/{bank.id}", json={"custom_domain": "https://Portal.HDFC.com/"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["data"]["custom_domain"] == "portal.hdfc.com"  # cleaned as people paste it
+
+    data = master.post(f"/nginx/{bank.id}/deploy").json()["data"]
+    assert data["state"] == "deployed" and data["custom_domain"] == "portal.hdfc.com"
+    assert data["domains"] == ["portal.hdfc.com", f"hdfc.{BASE}"] and data["https"] is True
+    assert data["urls"][:2] == ["https://portal.hdfc.com", f"https://hdfc.{BASE}"]
+    config = (dirs["available"] / "governix-hdfc.conf").read_text()
+    assert "server_name portal.hdfc.com;" in config and "listen 7003;" in config
+    assert f"{dirs['certs']}/governix-portal.hdfc.com/fullchain.pem" in config
+    # The sign-in page finds the bank by its own domain.
+    assert client.get("/tenant-info?host=portal.hdfc.com&port=443").json()["data"]["slug"] == "hdfc"
+
+    # A new domain is out of date until deployed, then gets its own certificate, never the old domain's.
+    master.patch(f"/organizations/{bank.id}", json={"custom_domain": "bank.example.org"})
+    assert master.get(f"/nginx/{bank.id}").json()["data"]["state"] == "outdated"
+    config = master.post(f"/nginx/{bank.id}/deploy").json()["data"]["config"]
+    assert f"{dirs['certs']}/governix-bank.example.org/fullchain.pem" in config and "portal.hdfc.com" not in config
+
+
+def test_custom_domain_rules(master, bank, db):
+    other = make_org(db, "axis")
+    db.commit()
+    assert master.patch(f"/organizations/{bank.id}", json={"custom_domain": "portal.hdfc.com"}).status_code == 200
+    taken = master.patch(f"/organizations/{other.id}", json={"custom_domain": "PORTAL.hdfc.com"})
+    assert taken.status_code == 409 and taken.json()["error"]["reason"] == "DOMAIN_TAKEN"
+    reserved = master.patch(f"/organizations/{other.id}", json={"custom_domain": f"axis.{BASE}"})
+    assert reserved.json()["error"]["reason"] == "DOMAIN_RESERVED"
+    for bad in ("not a domain", "bank.com:8080", "*.bank.com", "bank.com/login", "localhost", "10.0.0.5"):
+        assert master.patch(f"/organizations/{other.id}", json={"custom_domain": bad}).status_code == 422, bad
+    # Blank removes it.
+    cleared = master.patch(f"/organizations/{bank.id}", json={"custom_domain": ""}).json()["data"]
+    assert cleared["custom_domain"] is None

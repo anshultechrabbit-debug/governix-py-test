@@ -103,3 +103,21 @@ def test_branch_manager_creates_users_without_a_department(client, tenant):
 def test_me_names_the_branch(client, tenant):
     me = login(client, tenant.user_a1).get("/auth/me").json()["data"]
     assert me["branch_name"] == tenant.branch_a.name
+
+
+def test_port_in_use_on_the_server_is_never_given_out(client, master):
+    """A port another program listens on is skipped when picking one, refused when typed, and refused by Deploy."""
+    import socket
+
+    platform = login(client, master)
+    with socket.socket() as squatter:
+        squatter.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        squatter.bind(("0.0.0.0", 7003))
+        squatter.listen()
+        assert platform.get("/organizations/options").json()["data"]["next_port"] == 7004
+        auto = platform.post("/organizations", json={"name": "Auto Bank", "slug": "auto-bank"}).json()["data"]
+        assert auto["allowed_port"] == 7004
+        typed = platform.post("/organizations", json={"name": "Typed Bank", "slug": "typed-bank", "allowed_port": 7003})
+        assert typed.status_code == 409 and typed.json()["error"]["reason"] == "PORT_IN_USE"
+        # Keeping its own port is fine even though its nginx site listens there.
+        assert platform.patch(f"/organizations/{auto['id']}", json={"allowed_port": 7004}).status_code == 200

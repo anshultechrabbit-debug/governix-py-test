@@ -14,6 +14,7 @@ from app.modules.auth.permissions import Principal, Role
 from app.modules.categories.defaults import seed_default_categories
 from app.modules.organizations import hierarchy
 from app.modules.organizations.model import Organization
+from app.modules.organizations.ports import port_in_use
 from app.modules.organizations.repository import OrganizationRepository
 from app.modules.organizations.schema import (
     BRAND_FONTS,
@@ -33,7 +34,7 @@ LOGO_MAGIC = (b"\x89PNG", b"\xff\xd8\xff", b"RIFF")
 # Branding, contact details and the access port: copied on create, and clearable on update.
 PROFILE_FIELDS = (
     "primary_color", "secondary_color", "brand_font", "contact_email", "contact_phone", "website", "address",
-    "allowed_port",
+    "allowed_port", "custom_domain",
 )
 
 class OrganizationService:
@@ -54,14 +55,22 @@ class OrganizationService:
             next_port=self.next_free_port(),
         )
 
+    def busy_on_server(self, port: int) -> bool:
+        """Another program (or another nginx site) on this server already listens on the port."""
+        return self.settings.TENANT_PORT_CHECK_SERVER and port_in_use(port)
+
     def next_free_port(self) -> int | None:
-        """The lowest port of the tenant range no organization holds (deleted ones keep theirs), or None."""
+        """The lowest port of the tenant range that no organization holds (deleted ones keep theirs) and nothing
+        on this server listens on, or None."""
         taken = {o.allowed_port for o in self.repository.with_ports()}
         low, high = self.settings.TENANT_PORT_MIN, self.settings.TENANT_PORT_MAX
-        return next((port for port in range(low, high + 1) if port not in taken), None)
+        return next(
+            (port for port in range(low, high + 1) if port not in taken and not self.busy_on_server(port)), None
+        )
 
     def _check_port(self, port: int | None, organization_id: uuid.UUID | None = None) -> None:
-        """A port must lie in the tenant range and belong to no other organization."""
+        """A port must lie in the tenant range, belong to no other organization, and, when it is new to this
+        organization, be free on this server (its own port is held by its own nginx site)."""
         if port is None:
             return
         low, high = self.settings.TENANT_PORT_MIN, self.settings.TENANT_PORT_MAX
@@ -70,6 +79,21 @@ class OrganizationService:
         owner = self.repository.by_port(port)
         if owner is not None and owner.id != organization_id:
             raise ConflictError(f"Port {port} is already used by {owner.name}.", code="PORT_TAKEN")
+        if owner is None and self.busy_on_server(port):
+            raise ConflictError(f"Port {port} is already in use by another program on this server. "
+                                "Choose another port, or leave it empty to get a free one.", code="PORT_IN_USE")
+
+    def _check_domain(self, domain: str | None, organization_id: uuid.UUID | None = None) -> None:
+        """A custom domain belongs to one organization, and is not one Governix hands out itself."""
+        if domain is None:
+            return
+        base = self.settings.NGINX_BASE_DOMAIN
+        if base and (domain == base or domain.endswith(f".{base}")):
+            raise ValidationError(f"Addresses under {base} are given to every organization automatically; "
+                                  "enter the bank's own domain.", code="DOMAIN_RESERVED")
+        owner = self.repository.by_domain(domain)
+        if owner is not None and owner.id != organization_id:
+            raise ConflictError(f"{domain} is already used by {owner.name}.", code="DOMAIN_TAKEN")
 
     def create(self, principal: Principal, data: OrganizationCreate) -> Organization:
         """Create the organisation and, when given, its first admin, in one transaction."""
@@ -81,12 +105,13 @@ class OrganizationService:
             port = self.next_free_port()
             if port is None:
                 low, high = self.settings.TENANT_PORT_MIN, self.settings.TENANT_PORT_MAX
-                raise ConflictError(f"Every port from {low} to {high} is in use. Free one, or widen "
+                raise ConflictError(f"Every port from {low} to {high} is taken or in use on this server. Free one, or widen "
                                     "TENANT_PORT_MIN / TENANT_PORT_MAX.", code="NO_FREE_PORT")
         else:
             self._check_port(port)
+        self._check_domain(data.custom_domain)
         with translate_unique_violation(
-            self.session, "An organization with this slug or port already exists."
+            self.session, "An organization with this slug, port or domain already exists."
         ):
             organization = self.repository.add(Organization(
                 name=data.name, slug=data.slug,
@@ -161,6 +186,8 @@ class OrganizationService:
         # Keeping its port is always allowed, even one outside a range that changed since.
         if "allowed_port" in changes and changes["allowed_port"] != organization.allowed_port:
             self._check_port(changes["allowed_port"], organization.id)
+        if "custom_domain" in changes and changes["custom_domain"] != organization.custom_domain:
+            self._check_domain(changes["custom_domain"], organization.id)
         for field, value in changes.items():
             setattr(organization, field, value)
         record_event(
@@ -172,7 +199,8 @@ class OrganizationService:
             resource_id=organization.id,
             details={"changes": {k: str(v) for k, v in changes.items()}},
         )
-        with translate_unique_violation(self.session, "Another organization already uses this port.", code="PORT_TAKEN"):
+        with translate_unique_violation(self.session, "Another organization already uses this port or domain.",
+                                        code="PORT_TAKEN"):
             self.session.commit()
         return organization
 

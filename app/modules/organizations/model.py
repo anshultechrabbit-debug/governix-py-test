@@ -35,3 +35,6 @@ class Organization(UUIDPrimaryKeyMixin, TimestampMixin, SoftDeleteMixin, Base):
     # The tenant's dedicated access port (TENANT_PORT_MIN..MAX). Recorded and reserved here;
     # nginx on the server is what serves the tenant on it.
     allowed_port: Mapped[int | None] = mapped_column(Integer, unique=True)
+    # The bank's own address for its portal (portal.bank.com), lower case. A deploy (Organizations > Nginx) serves
+    # it on 80, and on 443 once certbot has a certificate; its DNS must point at the server.
+    custom_domain: Mapped[str | None] = mapped_column(String(253), unique=True)

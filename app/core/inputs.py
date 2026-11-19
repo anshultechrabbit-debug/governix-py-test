@@ -14,6 +14,7 @@ the cleaning, to the whole value, and measuring None is a TypeError (a 500), not
     Text         descriptions, notes, messages, reasons, questions: line breaks allowed, not blank
     Phone        digits with + ( ) - . and spaces; 7-15 digits; + only at the start
     Website      an http:// or https:// address without spaces
+    Domain       a host name such as portal.bank.com (http://, a trailing / or . are dropped; stored in lower case)
     Tag          a skill or keyword: one line, 1-50 characters, no < or > or commas
     NewPassword  the password policy (`password_problems`); applies whenever a password is set, never at sign-in
 """
@@ -32,6 +33,7 @@ _CONTROL_LINE = re.compile(r"[\x00-\x1f\x7f]")
 _CONTROL_TEXT = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")  # keeps tab, line feed, carriage return
 _REPEAT = re.compile(r"(.)\1{3,}")
 _WEBSITE = re.compile(r"^https?://[^\s/$.?#][^\s]*\.[^\s]+$", re.I)
+_DOMAIN = re.compile(r"^(?=.{4,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$")
 
 
 def _fail(kind: str, message: str) -> PydanticCustomError:
@@ -133,6 +135,22 @@ def _website(value: str | None) -> str | None:
     return value
 
 
+def _domain_clean(value):
+    """portal.bank.com from "https://Portal.Bank.com/" as people paste it."""
+    if not isinstance(value, str):
+        return value
+    value = re.sub(r"^https?://", "", value.strip().lower())
+    return value.rstrip("/").rstrip(".")
+
+
+def _domain(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not _DOMAIN.match(value):
+        raise _fail("domain", "must be a domain name such as portal.bank.com (no path, port, spaces or *)")
+    return value
+
+
 def _tag(value: str) -> str:
     if "," in value:
         raise _fail("tag", "must be one item without commas (add each as its own entry)")
@@ -213,6 +231,10 @@ Phone = Annotated[str | None, BeforeValidator(_blank_is_none), BeforeValidator(_
 Website = Annotated[str | None, BeforeValidator(_blank_is_none), BeforeValidator(_one_line),
                     AtMost(300), AfterValidator(_website),
                     _rules("starts with http:// or https://", "no spaces", "blank = none")]
+Domain = Annotated[str | None, BeforeValidator(_blank_is_none), BeforeValidator(_domain_clean),
+                   AtMost(253), AfterValidator(_domain),
+                   _rules("a domain name such as portal.bank.com", "http:// and a trailing / are dropped",
+                          "blank = none")]
 Tag = Annotated[str, BeforeValidator(_one_line), Field(min_length=1, max_length=50), AfterValidator(_tag),
                 _rules("one item, no commas", "no < or >")]
 NewPassword = Annotated[str, Field(min_length=PASSWORD_MIN, max_length=PASSWORD_MAX), AfterValidator(_password),

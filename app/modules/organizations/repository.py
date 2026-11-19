@@ -17,6 +17,9 @@ class OrganizationRepository:
     def by_port(self, port: int) -> Organization | None:
         return self.session.scalar(select(Organization).where(Organization.allowed_port == port))
 
+    def by_domain(self, domain: str) -> Organization | None:
+        return self.session.scalar(select(Organization).where(Organization.custom_domain == domain))
+
     def with_ports(self) -> list[Organization]:
         return list(self.session.scalars(
             select(Organization).where(Organization.allowed_port.is_not(None)).order_by(Organization.allowed_port)
