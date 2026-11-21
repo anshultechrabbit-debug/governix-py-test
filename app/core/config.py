@@ -300,6 +300,10 @@ class Settings(BaseSettings):
     RAG_PREVIOUS_VERSION_FALLBACK: bool = True
     # AI summary of each version, generated in the background once it is searchable.
     AI_SUMMARY_ENABLED: bool = True
+    # An organization may use AI only once the Master Admin has configured it (its own API key, models) and
+    # activated it (app/modules/ai_management/status.py). False: the earlier behaviour, where an organization
+    # with nothing configured uses the platform's key and model.
+    AI_REQUIRE_ORG_CONFIG: bool = True
     # Support Center. The AI recommends a ticket's team, priority and skills; below this confidence the
     # creator must choose the destination. False: categories alone recommend (no model call).
     SUPPORT_TRIAGE_AI: bool = True

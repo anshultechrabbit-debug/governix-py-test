@@ -184,6 +184,38 @@ class OrgAINotifConfig(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
 
 
+class AIFeature(StrEnum):
+    """What an AI call was made for (org_ai_usage.feature), for the usage breakdown."""
+
+    QA = "qa"  # questions to the assistant (and the question count itself)
+    SEARCH = "search"
+    SUMMARY = "summary"  # AI summary of a policy version
+    DOCUMENT_ANALYSIS = "document_analysis"  # naming and matching an uploaded document
+    CLASSIFICATION = "classification"  # where an upload belongs (main policy, sub-policy)
+    TICKET_TRIAGE = "ticket_triage"  # support ticket team, priority and skills
+    INDEXING = "indexing"  # embeddings of an uploaded document
+    OTHER = "other"
+
+
+class OrgAISettings(UUIDPrimaryKeyMixin, TimestampMixin, Base):
+    """Whether the Master Admin has switched AI on for the organization. Without an active row, no AI call of the
+    organization runs (with AI_REQUIRE_ORG_CONFIG). The status shown everywhere is computed from this row, the
+    keys, the models and the usage (ai_management.status), never stored."""
+
+    __tablename__ = "org_ai_settings"
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"), unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    activated_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # Set when the Master Admin switched AI off on purpose (SUSPENDED); cleared on activation.
+    suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    suspended_by_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    suspended_reason: Mapped[str | None] = mapped_column(String(300))
+    # The status organization admins were last told about: a change notifies them once.
+    notified_status: Mapped[str | None] = mapped_column(String(30))
+
+
 class OrgAIUsage(UUIDPrimaryKeyMixin, Base):
     """One AI call (or one question) of an organization, with its tokens and cost."""
 
@@ -192,8 +224,12 @@ class OrgAIUsage(UUIDPrimaryKeyMixin, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=sql("now()"))
     organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id", ondelete="CASCADE"))
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    # The user's branch when the call was made (None: an organization-level user or background work).
+    branch_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("branches.id", ondelete="SET NULL"))
     # question | answers | embeddings
     service: Mapped[str] = mapped_column(String(40))
+    # What the call was for (AIFeature); None on rows written before features were recorded.
+    feature: Mapped[str | None] = mapped_column(String(40))
     provider: Mapped[str] = mapped_column(String(40))
     model: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(12), default=UsageStatus.SETTLED)
@@ -201,10 +237,18 @@ class OrgAIUsage(UUIDPrimaryKeyMixin, Base):
     output_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     embedding_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     cost_usd: Mapped[float] = mapped_column(Numeric(14, 8), default=0)
+    # True when the provider reported no usage and the figures are Governix's estimate.
+    estimated: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sql("false"))
+    # The HTTP request (X-Request-ID) or background job that made the call: the audit reference.
+    request_id: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(String(80))
+    # Also: "price" [input, output] USD per 1M tokens and "price_source" the cost was computed with.
     meta: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
 
-    __table_args__ = (Index("ix_org_ai_usage_org_created", "organization_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_org_ai_usage_org_created", "organization_id", "created_at"),
+        Index("ix_org_ai_usage_created", "created_at"),
+    )
 
 
 class OrgAINotifSent(UUIDPrimaryKeyMixin, Base):

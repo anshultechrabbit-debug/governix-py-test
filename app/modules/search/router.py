@@ -11,6 +11,8 @@ from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.search.schema import SearchRequest, SearchResponse
 from app.modules.search.service import SearchService
+from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm, search_embedder
 from app.workers.runtime import get_runtime
 
@@ -29,11 +31,14 @@ def get_service(
     if not principal.organization_id:
         return SearchService(db, factory, runtime.embedder, cache, llm_factory=lambda: runtime.llm)
     # The caller's organization: its model, its key, its shared limits (ai_management.runtime).
-    llm = organization_llm(db, factory, settings, principal.organization_id, fallback=lambda: runtime.llm,
-                           user_id=principal.user_id)
+    try:
+        llm = organization_llm(db, factory, settings, principal.organization_id, fallback=lambda: runtime.llm,
+                               user_id=principal.user_id, feature=AIFeature.SEARCH)
+    except LLMUnavailableError:  # AI not available to the organization: search still works, on its own
+        llm = None
     embedder = search_embedder(db, factory, settings, principal.organization_id, runtime.embedder,
-                                     user_id=principal.user_id)
-    return SearchService(db, factory, embedder, cache, llm_factory=lambda: llm)
+                               user_id=principal.user_id, feature=AIFeature.SEARCH)
+    return SearchService(db, factory, embedder, cache, llm_factory=(lambda: llm) if llm is not None else None)
 
 
 @router.post("", response_model=ApiResponse[SearchResponse])

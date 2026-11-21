@@ -25,6 +25,7 @@ from app.infrastructure.storage.base import Storage
 from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm
 from app.modules.email import service as email
 from app.modules.users.model import User
@@ -60,7 +61,8 @@ def get_service(db: Annotated[Session, Depends(get_db)], storage: Annotated[Stor
         # Triage uses the caller's organization's model and limits; it is optional, so a blocked or
         # unconfigured model leaves the category to recommend.
         llm = (organization_llm(db, runtime.session_factory, settings, principal.organization_id,
-                                fallback=lambda: runtime.llm, user_id=principal.user_id)
+                                fallback=lambda: runtime.llm, user_id=principal.user_id,
+                                feature=AIFeature.TICKET_TRIAGE)
                if principal.organization_id else runtime.llm)
     except (RuntimeError, LLMUnavailableError):  # no runtime, or no model the organization may use
         llm = None

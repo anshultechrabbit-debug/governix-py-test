@@ -227,8 +227,9 @@ API key vault, models, question limit, token limits, credit budget, alerts. Tabl
 - `AIBlocked` is an `AppError` **and** an `LLMUnavailableError`, so optional AI (naming, summaries, ticket triage)
   degrades as it does in an outage; embeddings raise `AIEmbeddingBlocked` (searches fall back to keywords, an upload
   stops with `AI_LIMIT_REACHED`).
-- **Nothing configured = no change**: no models assigned and no key → the runtime's shared platform LLM/embedder
-  (`fallback=`), metered but unlimited. Assigned models → only those (default first); all disabled → blocked.
+- **Nothing configured = no AI** (since 2026-11-21, `AI_REQUIRE_ORG_CONFIG=True`, see the next section). With the
+  setting off (most tests): no models and no key → the platform LLM/embedder (`fallback=`), metered but unlimited.
+  Assigned models → only those (default first); all disabled → blocked.
 - Periods are computed from the clock (`service.window`), so resets need no job. Credits: monthly (UTC) or one total
   budget; rollover carries the previous month's unspent budget, computed once per month (`carried_for`).
 - Prices: the model's own price on its assignment, else `ai_usage.service.PRICES` / `OPENAI_PRICES`. With a budget
@@ -246,6 +247,43 @@ API key vault, models, question limit, token limits, credit budget, alerts. Tabl
   resource; claiming a row in `org_ai_notif_sent` is the dedupe (once per threshold and period; a jump sends the
   highest only). Recipients: Master Admins (link to the AI page) and the organization's Org Admins.
 - Tests: `app/tests/integration/test_ai_management.py`.
+
+## Mandatory AI configuration (2026-11-21, `ai_management/status.py`, `lifecycle.py`, `reports.py`, migration `e6c2a9d4b8f3`)
+
+- No organization uses AI until the Master Admin configured **and activated** it. Status is computed on every check
+  from `org_ai_settings` + keys + models + usage (`status.readiness`), never stored: NOT_CONFIGURED, INCOMPLETE,
+  INVALID, ACTIVE, SUSPENDED, LIMIT_REACHED.
+  - Required: an enabled answering model; an active API key the provider accepted (`validation_status='valid'`)
+    for the answering model's provider and the embedding model's provider (local/Ollama need none); activation.
+    No embedding model assigned → the platform's `EMBEDDING_MODEL` called with the organization's own key (the
+    vectors must match the index). Limits are recommended, not required (unset = unlimited, shown as a warning).
+  - INVALID: key rejected, undecryptable, or `details.models` lacks the assigned model (`AI_MODEL_NOT_ALLOWED`).
+    A key never checked or "unreachable" is INCOMPLETE ("press Check"), not INVALID.
+- **The gate** `status.ensure_ready` runs in `organization_llm`, `organization_embedder` and `reserve_question`, so
+  every route and worker is covered. Refusals: `AI_NOT_CONFIGURED` / `AI_CONFIGURATION_INCOMPLETE` /
+  `AI_CONFIGURATION_INVALID` (409), `AI_SUSPENDED` (403), limits 429 as before. The message is the same for every
+  role (`status.USER_MESSAGE`); details only on the admin endpoints. Optional AI (naming, summaries, triage,
+  search rephrasing, upload classification) degrades as in an outage; search falls back to keywords.
+  `service._check_switched_on` repeats the one-row check inside every reservation, so a suspension stops calls
+  already being prepared.
+- Activation `POST /organizations/{id}/ai/activate` (409 with `missing` until complete), `POST .../suspend
+  {reason}`. Every configuration endpoint ends in `lifecycle.after_change`: re-arms alerts above the new usage
+  (`rearm_alerts`; the alert dedupe key includes the limit), notifies Org Admins once per availability change
+  (`AI_STATUS`, remembered in `org_ai_settings.notified_status`; Master Admins too for INVALID), and resumes AI
+  indexing (`ingestion.recovery.resume_organization`: FAILED documents with an AI code, READY documents whose
+  embedding stage failed). Uploads still store and keyword-index while AI is off ("AI indexing is pending").
+- Usage rows now carry `feature` (`model.AIFeature`), `branch_id` (the user's), `request_id`, `estimated`, and
+  `meta.price` / `meta.price_source`. A stream failing after it started, or an answer without usage figures,
+  counts the estimate (`estimated=true`).
+- Reads: `GET /ai/status` (everyone; Org Admins also get `details` and `meters`; the panel polls it every 60 s
+  and on focus), `GET /organizations/{id}/ai/status`, `GET /organizations/{id}/ai/usage?from&to&branch_id&user_id&
+  feature&model&provider`, `GET /ai/platform` (Master Admin dashboard: status counts, `attention`, org-wise usage).
+- The migration activates organizations that already had a valid API key and an enabled answering model of its
+  provider; all others start NOT_CONFIGURED (they were on the platform key).
+- Panel: `context/AIStatusContext.jsx` (polling), `components/Common/ai/AIStatusNotice.jsx` (Org Admin login
+  popup, dismissal in sessionStorage `governix_ai_notice`, cleared on sign-in/out; banners), chat boxes disabled
+  while unavailable, `masteradmin/ai/StatusPanel.jsx` (Activate/Suspend), `UsageTab.jsx`, `PlatformAIPanel.jsx`.
+- Tests: `app/tests/integration/test_ai_activation.py` (turns the setting on; the rest of the suite has it off).
 
 ## Email / SMTP (2026-11-18, `app/modules/email/`, `/settings/email`, migration `b7c4d2e9f1a3`)
 

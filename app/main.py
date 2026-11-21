@@ -30,6 +30,7 @@ from app.modules.nginx.router import router as nginx_router
 from app.modules.notifications.router import router as notifications_router
 from app.modules.organizations.router import router as organizations_router
 from app.modules.ai_management.router import router as ai_management_router
+from app.modules.ai_management.router import status_router as ai_status_router
 from app.modules.email.router import router as email_settings_router
 from app.modules.organizations.tenant import router as tenant_router
 from app.modules.policies.router import router as policies_router
@@ -161,6 +162,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         auth_router,
         organizations_router,
         ai_management_router,
+        ai_status_router,
         email_settings_router,
         nginx_router,
         tenant_router,

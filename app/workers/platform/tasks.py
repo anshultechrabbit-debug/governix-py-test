@@ -5,6 +5,7 @@ import uuid
 from datetime import UTC, datetime, time, timedelta
 
 from app.infrastructure.ai.llm.base import LLMUnavailableError
+from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm
 from app.infrastructure.queue.base import Queue
 from app.infrastructure.queue.registry import JobContext, task
@@ -31,7 +32,7 @@ def summarize(payload: dict, ctx: JobContext) -> None:
             return
         try:
             llm = organization_llm(session, rt.session_factory, rt.settings, version.organization_id,
-                                   fallback=lambda: rt.llm)
+                                   fallback=lambda: rt.llm, feature=AIFeature.SUMMARY)
             summarize_version(session, llm, version)
         except LLMUnavailableError:
             # A summary is optional; the policy is fully usable without one.

@@ -29,6 +29,8 @@ class NotificationType(StrEnum):
     SECURITY_ALERT = "SECURITY_ALERT"
     # AI quota / token / credit threshold reached for an organisation.
     AI_THRESHOLD = "AI_THRESHOLD"
+    # The organization's AI became available or unavailable (not configured, invalid key, suspended, activated).
+    AI_STATUS = "AI_STATUS"
     # A Branch Manager uploaded a new version of a policy they do not manage: an Org Admin approves it.
     VERSION_APPROVAL = "VERSION_APPROVAL"
 

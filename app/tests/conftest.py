@@ -69,6 +69,8 @@ def settings(tmp_path: Path, test_database_url: str) -> Settings:
         LLM_PROVIDER="local",
         # Most tests act as admins without an authenticator; test_step_up.py turns it on.
         STEP_UP_ENABLED=False,
+        # Most tests use AI without configuring an organization first; test_ai_activation.py turns it on.
+        AI_REQUIRE_ORG_CONFIG=False,
     )
 
 

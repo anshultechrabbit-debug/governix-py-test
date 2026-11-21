@@ -7,6 +7,7 @@ from sqlalchemy import select
 from app.infrastructure.ai.llm.base import LLMUnavailableError
 from app.infrastructure.queue.registry import JobContext, task
 from app.modules.audit.service import record_event
+from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm
 from app.modules.documents.model import DocumentStatus
 from app.modules.ingestion import pipeline, progress
@@ -38,7 +39,8 @@ def analyze(payload: dict, ctx: JobContext) -> None:
                 # The organization's model, metered against its limits; naming is optional, so a blocked or
                 # unconfigured model leaves the title found from the layout.
                 llm = organization_llm(session, rt.session_factory, rt.settings, document.organization_id,
-                                       fallback=lambda: rt.llm)
+                                       fallback=lambda: rt.llm, user_id=document.uploaded_by_id,
+                                       feature=AIFeature.DOCUMENT_ANALYSIS)
             except LLMUnavailableError:
                 llm = None
             analysis = analyze_document(session, document, rt.settings, body_font,

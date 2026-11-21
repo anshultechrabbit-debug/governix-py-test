@@ -286,3 +286,118 @@ class AIOverview(BaseModel):
     notifications: list[NotifRead]
     daily_usage: list[UsageDay]
     catalog: Catalog | None
+    readiness: "ReadinessRead | None" = None
+
+
+# Status and activation ------------------------------------------------------------------------------------------
+
+class ReadinessRead(BaseModel):
+    """The organization's AI status (ai_management.status), computed from its configuration and usage."""
+
+    status: str  # NOT_CONFIGURED | INCOMPLETE | INVALID | ACTIVE | SUSPENDED | LIMIT_REACHED
+    ready: bool
+    code: str | None  # the error code AI requests get in this status (AI_NOT_CONFIGURED, ...)
+    message: str
+    activated: bool
+    can_activate: bool
+    missing: list[str]
+    problems: list[str]
+    exhausted: list[str]
+    warnings: list[str]
+    activated_at: datetime | None
+    suspended_at: datetime | None
+    suspended_reason: str | None
+
+
+class SuspendRequest(BaseModel):
+    reason: str | None = Field(None, max_length=300)
+
+
+class StatusMeters(BaseModel):
+    questions: Meter
+    tokens: Meter
+    credits: Meter
+    questions_resets_at: datetime | None
+    tokens_resets_at: datetime | None
+    credits_resets_at: datetime | None
+
+
+class AIStatusRead(BaseModel):
+    """GET /ai/status: what the signed-in person's organization may do with AI now. Everyone in the organization
+    gets status, ready and a message; Org Admins also get what is wrong and the usage meters (never keys)."""
+
+    scope: str  # "organization" | "platform" (the Master Admin, who belongs to no organization)
+    organization_id: uuid.UUID | None = None
+    organization_name: str | None = None
+    status: str | None = None
+    ready: bool
+    code: str | None = None
+    message: str = ""
+    # Org Admin only.
+    details: ReadinessRead | None = None
+    meters: StatusMeters | None = None
+    checked_at: datetime
+
+
+# Usage reports --------------------------------------------------------------------------------------------------
+
+class UsageTotals(BaseModel):
+    questions: int = 0
+    calls: int = 0
+    failed_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    embedding_tokens: int = 0
+    total_tokens: int = 0
+    cost_usd: float = 0.0
+    # The part of cost_usd computed from Governix's own estimate (the provider reported no usage).
+    estimated_cost_usd: float = 0.0
+    # The part computed from the provider's reported usage.
+    actual_cost_usd: float = 0.0
+
+
+class UsageGroup(UsageTotals):
+    key: str | None  # feature, model, branch id, user id or organization id
+    label: str
+
+
+class UsageReport(BaseModel):
+    """Usage of one organization (or, for the Master Admin, of the platform) in [since, until), filtered."""
+
+    since: datetime
+    until: datetime
+    totals: UsageTotals
+    today: UsageTotals
+    this_month: UsageTotals
+    daily: list[UsageDay]
+    by_feature: list[UsageGroup]
+    by_model: list[UsageGroup]
+    by_branch: list[UsageGroup]
+    by_user: list[UsageGroup]
+    # The choices the filters offer: [{"value", "label"}].
+    filters: dict[str, list[dict[str, str]]]
+
+
+class OrganizationAIRow(UsageTotals):
+    organization_id: uuid.UUID
+    name: str
+    status: str
+    message: str
+    questions_limit: int | None = None
+    total_token_limit: int | None = None
+    budget_usd: float | None = None
+    # Highest percent used of any limit in its current period (None: no limits).
+    peak_percent: float | None = None
+
+
+class PlatformAIReport(BaseModel):
+    """The Master Admin dashboard's AI section."""
+
+    organizations: dict[str, int]  # total, active, requiring_configuration, limit_reached, invalid, suspended, ...
+    attention: list[OrganizationAIRow]  # organizations whose AI is not active, worst first
+    usage: UsageReport
+    by_organization: list[OrganizationAIRow]
+    providers: list[str]
+
+
+AIOverview.model_rebuild()

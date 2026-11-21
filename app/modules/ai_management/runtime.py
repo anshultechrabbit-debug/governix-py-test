@@ -21,8 +21,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import Settings
 from app.infrastructure.ai.embeddings.base import Embedded, EmbeddingProvider, EmbeddingUnavailableError
 from app.infrastructure.ai.llm.base import LLMProvider, LLMResult
-from app.modules.ai_management.model import AIProvider, ModelService
+from app.modules.ai_management.model import AIFeature, AIProvider, ModelService
 from app.modules.ai_management.service import AIBlocked, AIEmbeddingBlocked, AIManagementService, AIModelNotConfigured
+from app.modules.ai_management.status import ensure_ready
 
 logger = logging.getLogger(__name__)
 
@@ -41,18 +42,20 @@ def _free(model: str) -> bool:
 
 def organization_llm(db: Session, session_factory: sessionmaker, settings: Settings, organization_id: uuid.UUID,
                      *, fallback: Callable[[], LLMProvider] | None = None,
-                     user_id: uuid.UUID | None = None) -> LLMProvider:
+                     user_id: uuid.UUID | None = None, feature: str = AIFeature.OTHER) -> LLMProvider:
     """The organization's answering model, metered.
 
-    Nothing assigned and no key of its own: the platform's model (`fallback`, the runtime's shared provider),
-    still metered against the organization's limits. Raises AIModelNotConfigured when its assigned models are
-    all disabled."""
+    Raises AIBlocked (an LLMUnavailableError, so optional AI degrades as in an outage) unless the organization's
+    AI is configured, checked and activated (ai_management.status). With AI_REQUIRE_ORG_CONFIG off, an
+    organization with nothing assigned and no key of its own uses the platform's model (`fallback`), still
+    metered against its limits."""
     service = AIManagementService(db, settings)
+    ensure_ready(service, organization_id)
     provider, model_id, row = service.active_model(organization_id, ModelService.ANSWERS)
     key = service.decrypted_key(organization_id, provider)
-    if row is None and key is None and fallback is not None:
+    if row is None and key is None and fallback is not None and not settings.AI_REQUIRE_ORG_CONFIG:
         return OrganizationLLM(fallback(), session_factory, settings, organization_id, provider=provider,
-                               user_id=user_id)
+                               user_id=user_id, feature=feature)
     changes: dict = {"LLM_PROVIDER": provider, "LLM_MODEL": model_id}
     if provider == AIProvider.OPENAI and key:
         changes["OPENAI_API_KEY"] = SecretStr(key)
@@ -65,15 +68,18 @@ def organization_llm(db: Session, session_factory: sessionmaker, settings: Setti
     from app.infrastructure.ai.llm.factory import create_llm
 
     inner = create_llm(settings.model_copy(update=changes))
-    return OrganizationLLM(inner, session_factory, settings, organization_id, provider=provider, user_id=user_id)
+    return OrganizationLLM(inner, session_factory, settings, organization_id, provider=provider, user_id=user_id,
+                           feature=feature)
 
 
 class OrganizationLLM(LLMProvider):
     """An organization's model: each call reserved against its limits first, settled with actual usage after."""
 
     def __init__(self, inner: LLMProvider, session_factory: sessionmaker, settings: Settings,
-                 organization_id: uuid.UUID, *, provider: str, user_id: uuid.UUID | None) -> None:
+                 organization_id: uuid.UUID, *, provider: str, user_id: uuid.UUID | None,
+                 feature: str = AIFeature.OTHER) -> None:
         self.inner = inner
+        self.feature = feature
         self.session_factory = session_factory
         self.settings = settings
         self.organization_id = organization_id
@@ -116,7 +122,7 @@ class OrganizationLLM(LLMProvider):
                 raise AIBlocked("Your organization has reached its AI limit for this period.", code=code)
             row = service.reserve(self.organization_id, service="answers", provider=self.provider_name,
                                   model=self.model, input_tokens=input_tokens, output_tokens=budget * factor,
-                                  embedding_tokens=0, user_id=self.user_id)
+                                  embedding_tokens=0, user_id=self.user_id, feature=self.feature)
             session.commit()
             usage_id = row.id
         inner = self.inner
@@ -131,10 +137,19 @@ class OrganizationLLM(LLMProvider):
             with self.session_factory() as session:
                 service = AIManagementService(session, self.settings)
                 if keep_estimate:
-                    service.settle_estimate(usage_id)
+                    # The provider was paid but did not say for what: the reserved estimate counts.
+                    service.settle_estimate(usage_id, error=type(error).__name__ if error else None)
                 elif result is None or _free(result.model or ""):
-                    # Failed, or the provider fell back to the local stand-in: nothing was spent.
+                    # Failed before the provider answered, or the local stand-in answered: nothing was spent.
                     service.settle(usage_id, model=self.model, error=type(error).__name__ if error else None)
+                elif not (result.input_tokens or result.output_tokens):
+                    # An answer without usage figures: count what was sent and received, labelled an estimate.
+                    from app.modules.ai_management.model import OrgAIUsage
+
+                    reserved = session.get(OrgAIUsage, usage_id)
+                    service.settle(usage_id, model=result.model or self.model, estimated=True,
+                                   input_tokens=reserved.input_tokens if reserved else 0,
+                                   output_tokens=_estimate(result.raw or str(result.content or "")))
                 else:
                     service.settle(usage_id, model=result.model or self.model,
                                    input_tokens=result.input_tokens or 0, output_tokens=result.output_tokens or 0)
@@ -157,8 +172,10 @@ class OrganizationLLM(LLMProvider):
     def stream_json(self, system: str, user: str, schema: dict, *, context=None) -> Iterator:
         usage_id, inner = self._reserve(system, user, streaming=True)
         result: LLMResult | None = None
+        started = False  # the provider has begun answering, so it is being paid
         try:
             for part in inner.stream_json(system, user, schema, context=context):
+                started = True
                 if isinstance(part, LLMResult):
                     result = part
                 yield part
@@ -167,25 +184,33 @@ class OrganizationLLM(LLMProvider):
             self._settle(usage_id, result, keep_estimate=result is None)
             raise
         except Exception as exc:
-            self._settle(usage_id, result, exc if result is None else None)
+            # Failing after the answer started still costs the tokens generated so far: the estimate counts.
+            self._settle(usage_id, result, exc if result is None else None, keep_estimate=result is None and started)
             raise
         self._settle(usage_id, result)
 
 
 def organization_embedder(db: Session, session_factory: sessionmaker, settings: Settings,
                           organization_id: uuid.UUID, fallback: EmbeddingProvider | None,
-                          *, user_id: uuid.UUID | None = None) -> EmbeddingProvider | None:
-    """The organization's embedding model, metered. Nothing assigned: the platform's embedder."""
+                          *, user_id: uuid.UUID | None = None,
+                          feature: str = AIFeature.INDEXING) -> EmbeddingProvider | None:
+    """The organization's embedding model, metered. Raises AIEmbeddingBlocked (an EmbeddingUnavailableError:
+    searches fall back to keywords, an upload waits for indexing) unless the organization's AI is ready.
+
+    Nothing assigned: the platform's embedding model (the vectors must match the index), called with the
+    organization's own key; with AI_REQUIRE_ORG_CONFIG off and no key of its own, the platform's embedder."""
     service = AIManagementService(db, settings)
+    ensure_ready(service, organization_id, embeddings=True)
     try:
         provider, model_id, row = service.active_model(organization_id, ModelService.EMBEDDINGS)
-        key = service.decrypted_key(organization_id, provider) if row is not None else None
+        key = service.decrypted_key(organization_id, provider)
     except AIModelNotConfigured as exc:  # an embedding error, so searches fall back to keywords
         raise AIEmbeddingBlocked(exc.message, code=exc.code) from None
-    if row is None:
+    if row is None and (key is None or not settings.AI_REQUIRE_ORG_CONFIG):
         if fallback is None:
             return None
-        return OrganizationEmbedding(fallback, session_factory, settings, organization_id, provider, user_id=user_id)
+        return OrganizationEmbedding(fallback, session_factory, settings, organization_id, provider, user_id=user_id,
+                                     feature=feature)
     changes: dict = {"EMBEDDING_PROVIDER": provider, "EMBEDDING_MODEL": model_id}
     if provider == AIProvider.OPENAI and key:
         changes["OPENAI_API_KEY"] = SecretStr(key)
@@ -197,14 +222,16 @@ def organization_embedder(db: Session, session_factory: sessionmaker, settings: 
 
     inner = create_embedder(settings.model_copy(update=changes))
     return OrganizationEmbedding(inner, session_factory, settings, organization_id, provider,
-                                 user_id=user_id) if inner else None
+                                 user_id=user_id, feature=feature) if inner else None
 
 
 def search_embedder(db: Session, session_factory: sessionmaker, settings: Settings, organization_id: uuid.UUID,
-                    fallback: EmbeddingProvider | None, *, user_id: uuid.UUID | None = None) -> EmbeddingProvider | None:
+                    fallback: EmbeddingProvider | None, *, user_id: uuid.UUID | None = None,
+                    feature: str = AIFeature.SEARCH) -> EmbeddingProvider | None:
     """The organization's embedder for searching, or None (keyword lanes only) when it may not embed now."""
     try:
-        return organization_embedder(db, session_factory, settings, organization_id, fallback, user_id=user_id)
+        return organization_embedder(db, session_factory, settings, organization_id, fallback, user_id=user_id,
+                                     feature=feature)
     except EmbeddingUnavailableError as exc:
         logger.warning("Organization %s searches without vectors: %s", organization_id, exc)
         return None
@@ -212,8 +239,10 @@ def search_embedder(db: Session, session_factory: sessionmaker, settings: Settin
 
 class OrganizationEmbedding(EmbeddingProvider):
     def __init__(self, inner: EmbeddingProvider, session_factory: sessionmaker, settings: Settings,
-                 organization_id: uuid.UUID, provider: str, *, user_id: uuid.UUID | None = None) -> None:
+                 organization_id: uuid.UUID, provider: str, *, user_id: uuid.UUID | None = None,
+                 feature: str = AIFeature.INDEXING) -> None:
         self.inner = inner
+        self.feature = feature
         self.session_factory = session_factory
         self.settings = settings
         self.organization_id = organization_id
@@ -236,7 +265,7 @@ class OrganizationEmbedding(EmbeddingProvider):
             service.lock(self.organization_id)
             row = service.reserve(self.organization_id, service="embeddings", provider=self.provider_name,
                                   model=self.model, input_tokens=0, output_tokens=0, embedding_tokens=estimate,
-                                  user_id=self.user_id)
+                                  user_id=self.user_id, feature=self.feature)
             session.commit()
             usage_id = row.id
         try:
@@ -254,6 +283,10 @@ class OrganizationEmbedding(EmbeddingProvider):
                 if embedded is None or embedded.model_id != self.model_id:
                     # Failed, or a stand-in produced the vectors: the provider was not paid.
                     service.settle(usage_id, model=self.model, error=type(error).__name__ if error else "fallback")
+                elif not embedded.input_tokens and not _free(self.model) and self.provider_name not in (
+                        AIProvider.LOCAL, AIProvider.OLLAMA):
+                    # Vectors without a token count: the reserved estimate, labelled as such.
+                    service.settle_estimate(usage_id)
                 else:
                     service.settle(usage_id, model=self.model, embedding_tokens=embedded.input_tokens or 0)
                 session.commit()
@@ -265,9 +298,10 @@ class OrganizationEmbedding(EmbeddingProvider):
 
 def reserve_question(session: Session, settings: Settings, organization_id: uuid.UUID,
                      user_id: uuid.UUID | None = None) -> None:
-    """Charge one question to the organization's shared quota, or refuse it (AIBlocked, HTTP 429) when the
-    question, token or credit limit is used up or no model may be used. Commits."""
+    """Charge one question to the organization's shared quota, or refuse it: AI not configured, invalid or
+    suspended (409/403, ai_management.status), or the question, token or credit limit used up (429). Commits."""
     service = AIManagementService(session, settings)
+    ensure_ready(service, organization_id)
     service.lock(organization_id)
     service.check_question(organization_id)
     service.record_question(organization_id, user_id)

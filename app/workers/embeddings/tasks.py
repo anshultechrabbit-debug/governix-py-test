@@ -39,7 +39,13 @@ def embed_batch(payload: dict, ctx: JobContext) -> None:
         with failure_guard(session, document.id, Stage.EMBEDDING, ctx):
             try:
                 embedder = organization_embedder(session, rt.session_factory, rt.settings,
-                                                 document.organization_id, rt.embedder)
+                                                 document.organization_id, rt.embedder,
+                                                 user_id=document.uploaded_by_id)
+            except AIEmbeddingBlocked as exc:
+                # The organization's AI is not configured, activated or within its limits. The document stays
+                # stored and searchable by keyword; its AI indexing waits and resumes once AI is available
+                # (ingestion.recovery.resume_organization).
+                raise PipelineError(exc.code, "AI indexing is pending: " + exc.message) from None
             except EmbeddingUnavailableError as exc:
                 raise PipelineError("EMBEDDINGS_UNAVAILABLE", f"Embedding provider unavailable: {exc}") from None
 
@@ -68,9 +74,9 @@ def embed_batch(payload: dict, ctx: JobContext) -> None:
                     try:
                         embedded = embedder.embed(texts)
                     except AIEmbeddingBlocked as exc:
-                        # The organization's embedding token or credit limit: the document waits for a reset or
-                        # a higher limit, with the reason on its page.
-                        raise PipelineError("AI_LIMIT_REACHED", exc.message) from None
+                        # The organization's embedding token or credit limit, or AI switched off meanwhile: the
+                        # document waits for a reset, a higher limit or reactivation, with the reason on its page.
+                        raise PipelineError(exc.code, "AI indexing is pending: " + exc.message) from None
                     except Exception as exc:
                         # Many batches share one tokens-per-minute quota: wait for it, spread out,
                         # instead of spending attempts until the document fails.

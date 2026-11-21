@@ -63,6 +63,36 @@ RESOURCE_LABELS = {
     NotifResource.CREDITS: "AI credit budget",
 }
 
+_ALERT_HEADINGS = {
+    NotifResource.QUESTIONS: "AI Question Usage",
+    NotifResource.INPUT_TOKENS: "AI Input Token Usage",
+    NotifResource.OUTPUT_TOKENS: "AI Output Token Usage",
+    NotifResource.EMBEDDING_TOKENS: "AI Embedding Token Usage",
+    NotifResource.TOTAL_TOKENS: "AI Token Usage",
+    NotifResource.CREDITS: "AI Budget Usage",
+}
+
+
+def _big(value: float) -> str:
+    """5,400,000 -> "5.4 million"; 12,500 -> "12,500"."""
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:,.1f}".rstrip("0").rstrip(".") + " million"
+    return f"{value:,.0f}"
+
+
+def _amounts(resource: str, meter) -> str:
+    """"5.4 million of 6 million tokens", "$42.50 of $100.00", "7,450 of 10,000 questions"."""
+    if resource == NotifResource.CREDITS:
+        return f"${meter.used:,.2f} of ${meter.limit:,.2f}"
+    unit = "questions" if resource == NotifResource.QUESTIONS else "tokens"
+    return f"{_big(meter.used)} of {_big(meter.limit)} {unit}"
+
+
+def _severity(threshold: int) -> str:
+    """70: info, 80: warning, 90: high, 95: critical, 100: limit reached."""
+    return ("limit_reached" if threshold >= 100 else "critical" if threshold >= 95 else "high" if threshold >= 90
+            else "warning" if threshold >= 80 else "info")
+
 
 # --- errors ---------------------------------------------------------------------------------------------------------
 
@@ -408,6 +438,9 @@ class AIManagementService:
         for service in (ModelService.ANSWERS, ModelService.EMBEDDINGS):
             try:
                 provider, model_id, row = self.active_model(organization_id, service)
+                if row is None and service == ModelService.ANSWERS and self.settings.AI_REQUIRE_ORG_CONFIG:
+                    active[service] = None  # the platform's model is never used for an organization
+                    continue
                 active[service] = ActiveModel(provider=provider, model_id=model_id,
                                               source="organization" if row else "platform",
                                               uses_own_key=provider in keys)
@@ -717,10 +750,35 @@ class AIManagementService:
                             code="CREDIT_LIMIT_REACHED")
         self.active_model(organization_id, ModelService.ANSWERS)  # a model the organization may use
 
+    def _check_switched_on(self, organization_id: uuid.UUID, *, embeddings: bool = False) -> None:
+        """A suspension (or deactivation) stops even the calls already past the request's own check."""
+        if not self.settings.AI_REQUIRE_ORG_CONFIG:
+            return
+        from app.modules.ai_management.model import OrgAISettings
+        from app.modules.ai_management.status import USER_MESSAGE
+
+        row = self.db.scalar(select(OrgAISettings).where(OrgAISettings.organization_id == organization_id))
+        if row is not None and row.is_active:
+            return
+        suspended = row is not None and row.suspended_at is not None
+        exc = (AIEmbeddingBlocked if embeddings else AIBlocked)(
+            USER_MESSAGE, code="AI_SUSPENDED" if suspended else "AI_CONFIGURATION_INCOMPLETE")
+        exc.status_code = 403 if suspended else 409
+        raise exc
+
+    def _origin(self, user_id: uuid.UUID | None) -> dict[str, Any]:
+        """The branch of the user making the call and the request it belongs to, for the usage row."""
+        from app.core.request_context import get_request_id
+        from app.modules.users.model import User
+
+        branch_id = self.db.scalar(select(User.branch_id).where(User.id == user_id)) if user_id else None
+        return {"branch_id": branch_id, "request_id": (get_request_id() or None)}
+
     def reserve(self, organization_id: uuid.UUID, *, service: str, provider: str, model: str,
                 input_tokens: int, output_tokens: int, embedding_tokens: int,
-                user_id: uuid.UUID | None, meta: dict | None = None) -> OrgAIUsage:
+                user_id: uuid.UUID | None, meta: dict | None = None, feature: str | None = None) -> OrgAIUsage:
         """Charge the estimate of one call, under the organization's lock, or refuse it."""
+        self._check_switched_on(organization_id, embeddings=service == "embeddings")
         room = self.headroom(organization_id, save=True)
         total = input_tokens + output_tokens + embedding_tokens
         for name, need, cap in (("input", input_tokens, room.input), ("output", output_tokens, room.output),
@@ -743,14 +801,26 @@ class AIManagementService:
         row = OrgAIUsage(organization_id=organization_id, user_id=user_id, service=service, provider=provider,
                          model=model, status=UsageStatus.RESERVED, input_tokens=input_tokens,
                          output_tokens=output_tokens, embedding_tokens=embedding_tokens, cost_usd=round(cost, 8),
-                         meta=meta or {})
+                         meta=meta or {}, feature=feature, estimated=False, **self._origin(user_id))
         self.db.add(row)
         self.db.flush()
         return row
 
+    def _price_meta(self, model: str, provider: str, organization_id: uuid.UUID) -> tuple[tuple[float, float], dict]:
+        """The price a cost is computed with, and where it came from (kept on the row: later price changes never
+        rewrite history)."""
+        assigned = self._models(organization_id)
+        own = any(r.input_price_per_million is not None and (model == r.model_id or model.startswith(f"{r.model_id}-"))
+                  for r in assigned)
+        price = self.price(model, provider, assigned)
+        source = "free" if price == (0.0, 0.0) else "organization" if own else "platform" if price else "unpriced"
+        price = price or (0.0, 0.0)
+        return price, {"price": [price[0], price[1]], "price_source": source}
+
     def settle(self, usage_id: uuid.UUID, *, model: str, input_tokens: int = 0, output_tokens: int = 0,
-               embedding_tokens: int = 0, error: str | None = None) -> None:
-        """The provider's actual usage replaces the estimate (zero when the call failed)."""
+               embedding_tokens: int = 0, error: str | None = None, estimated: bool = False) -> None:
+        """The provider's actual usage replaces the estimate (zero when the call failed before the provider
+        charged anything). `estimated`: the provider reported no usage, so these figures are Governix's own."""
         row = self.db.get(OrgAIUsage, usage_id)
         if row is None:
             return
@@ -759,21 +829,29 @@ class AIManagementService:
             row.input_tokens = row.output_tokens = row.embedding_tokens = 0
             row.cost_usd = 0
             return
-        price = self.price(model, row.provider, self._models(row.organization_id)) or (0.0, 0.0)
-        row.status, row.model = UsageStatus.SETTLED, model[:200]
+        price, meta = self._price_meta(model, row.provider, row.organization_id)
+        row.status, row.model, row.estimated = UsageStatus.SETTLED, model[:200], estimated
         row.input_tokens, row.output_tokens, row.embedding_tokens = input_tokens, output_tokens, embedding_tokens
         row.cost_usd = round(((input_tokens + embedding_tokens) * price[0] + output_tokens * price[1]) / 1_000_000, 8)
+        row.meta = {**(row.meta or {}), **meta}
 
-    def settle_estimate(self, usage_id: uuid.UUID) -> None:
-        """The actual usage is unknown (the reader left mid-stream): the reserved estimate is what counts."""
+    def settle_estimate(self, usage_id: uuid.UUID, error: str | None = None) -> None:
+        """The actual usage is unknown but the provider was (or may have been) paid: the reader left mid-stream,
+        or the call failed after the provider had started answering. The reserved estimate is what counts,
+        labelled as an estimate."""
         row = self.db.get(OrgAIUsage, usage_id)
         if row is not None and row.status == UsageStatus.RESERVED:
-            row.status, row.meta = UsageStatus.SETTLED, {**(row.meta or {}), "estimated": True}
+            _, meta = self._price_meta(row.model, row.provider, row.organization_id)
+            row.status, row.estimated = UsageStatus.SETTLED, True
+            row.meta = {**(row.meta or {}), **meta, "estimated": True}
+            if error:
+                row.error = error[:80]
 
     def record_question(self, organization_id: uuid.UUID, user_id: uuid.UUID | None) -> None:
         self.db.add(OrgAIUsage(organization_id=organization_id, user_id=user_id, service="question",
                                provider="governix", model="question", status=UsageStatus.SETTLED,
-                               input_tokens=0, output_tokens=0, embedding_tokens=0, cost_usd=0, meta={}))
+                               input_tokens=0, output_tokens=0, embedding_tokens=0, cost_usd=0, meta={},
+                               feature="qa", estimated=False, **self._origin(user_id)))
 
     # --- 6. Notifications ---------------------------------------------------------------------------------------
 
@@ -791,20 +869,37 @@ class AIManagementService:
 
     def _levels(self, organization_id: uuid.UUID) -> dict[str, tuple[float, datetime, datetime | None]]:
         """Percent used and period of every resource with a limit."""
-        out: dict[str, tuple[float, datetime, datetime | None]] = {}
+        return {r: (m.percent, start, end) for r, (m, start, end) in self._meters(organization_id).items()}
+
+    def _meters(self, organization_id: uuid.UUID) -> dict[str, tuple[Meter, datetime, datetime | None]]:
+        """The meter and period of every resource with a limit."""
+        out: dict[str, tuple[Meter, datetime, datetime | None]] = {}
         quota = self.quota_read(organization_id)
         if quota.questions.percent is not None:
-            out[NotifResource.QUESTIONS] = (quota.questions.percent, quota.period_start, quota.resets_at)
+            out[NotifResource.QUESTIONS] = (quota.questions, quota.period_start, quota.resets_at)
         tokens = self.token_read(organization_id)
         for resource, meter in ((NotifResource.INPUT_TOKENS, tokens.input), (NotifResource.OUTPUT_TOKENS, tokens.output),
                                 (NotifResource.EMBEDDING_TOKENS, tokens.embedding),
                                 (NotifResource.TOTAL_TOKENS, tokens.total)):
             if meter.percent is not None:
-                out[resource] = (meter.percent, tokens.period_start, tokens.resets_at)
+                out[resource] = (meter, tokens.period_start, tokens.resets_at)
         credits = self.credit_read(organization_id, with_balance=False)
         if credits.credits.percent is not None:
-            out[NotifResource.CREDITS] = (credits.credits.percent, credits.period_start, credits.resets_at)
+            out[NotifResource.CREDITS] = (credits.credits, credits.period_start, credits.resets_at)
         return out
+
+    def rearm_alerts(self, organization_id: uuid.UUID) -> int:
+        """After a limit changed: forget the alerts of this period above what is now used, so crossing them
+        again (against the new limit) alerts again. Returns how many were re-armed."""
+        removed = 0
+        meters = self._meters(organization_id)
+        for resource in NotifResource:
+            meter, start, _ = meters.get(resource, (None, None, None))
+            conditions = [OrgAINotifSent.organization_id == organization_id, OrgAINotifSent.resource == resource]
+            if meter is not None:
+                conditions += [OrgAINotifSent.period_start == start, OrgAINotifSent.threshold > (meter.percent or 0)]
+            removed += self.db.query(OrgAINotifSent).filter(*conditions).delete(synchronize_session=False)
+        return removed
 
     def notifications_read(self, organization_id: uuid.UUID) -> list[NotifRead]:
         configs = self._notif_configs(organization_id)
@@ -854,25 +949,35 @@ class AIManagementService:
             if top not in claimed:
                 continue
             label = RESOURCE_LABELS[resource]
+            meter = self._meters(organization_id)[resource][0]
+            amounts = _amounts(resource, meter)
+            heading = _ALERT_HEADINGS[resource]
+            until = f" until {resets_at:%d %b %Y} (UTC)" if resets_at else ""
             if top >= 100:
-                title = f"{org.name}: {label} used up"
-                body = (f"{org.name} has used all of its {label} for this period. New AI requests are blocked"
-                        + (f" until {resets_at:%d %b %Y} (UTC)" if resets_at else "") + " or until the limit is raised.")
+                title = f"{heading} — limit reached"
+                master_body = (f"{org.name} has used all of its {label} ({amounts}). New AI requests of this kind are "
+                               f"blocked{until} or until the limit is raised.")
+                admin_body = (f"Your organization has used all of its {label} ({amounts}). New AI requests of this "
+                              f"kind are blocked{until}. Please contact the Super Admin to review or increase the limit.")
             else:
-                title = f"{org.name}: {top}% of the {label} used"
-                body = f"{org.name} has used {top}% of its {label} for this period; {100 - top}% remains."
+                title = f"{heading} — {top}% reached"
+                master_body = f"{org.name} has used {top}% of its {label}: {amounts}."
+                admin_body = (f"Your organization has consumed {amounts} for this period. "
+                              "Please contact the Super Admin to review or increase the limit.")
             data = {"organization_id": str(organization_id), "resource": str(resource), "threshold": top,
-                    "percent": percent}
-            key = f"ai:{organization_id}:{resource}:{top}:{start.isoformat()}"
+                    "percent": percent, "used": meter.used, "limit": meter.limit,
+                    "severity": _severity(top)}
+            # The limit is part of the event: after a raise, crossing a threshold again is a new alert.
+            key = f"ai:{organization_id}:{resource}:{top}:{start.isoformat()}:{meter.limit}"
             masters = self.db.scalars(select(User.id).where(User.role == Role.MASTER_ADMIN, User.is_active,
                                                              User.deleted_at.is_(None)))
             admins = self.db.scalars(select(User.id).where(User.role == Role.ORG_ADMIN, User.is_active,
                                                             User.organization_id == organization_id,
                                                             User.deleted_at.is_(None)))
-            notify(self.db, masters, NotificationType.AI_THRESHOLD, title, organization_id=organization_id, body=body,
-                   link=f"/masteradmin/organization/{organization_id}/ai", data=data, dedupe_key=key)
-            notify(self.db, admins, NotificationType.AI_THRESHOLD, title, organization_id=organization_id, body=body,
-                   link="/organizationadmin/ai-usage", data=data, dedupe_key=key)
+            notify(self.db, masters, NotificationType.AI_THRESHOLD, f"{org.name}: {title}", organization_id=organization_id,
+                   body=master_body, link=f"/masteradmin/organization/{organization_id}/ai", data=data, dedupe_key=key)
+            notify(self.db, admins, NotificationType.AI_THRESHOLD, title, organization_id=organization_id,
+                   body=admin_body, link="/organizationadmin/ai-usage", data=data, dedupe_key=key)
             sent += 1
         return sent
 

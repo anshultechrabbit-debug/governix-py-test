@@ -20,6 +20,7 @@ ACCOUNT_EVENTS: dict[str, tuple[str, str, bool]] = {
 NOTIFICATION_EVENTS: dict[str, tuple[str, bool]] = {
     "SECURITY_ALERT": ("Security alerts (two-step sign-in changes)", True),
     "AI_THRESHOLD": ("AI usage alerts (70% … 100% of a limit)", True),
+    "AI_STATUS": ("AI availability changes (activated, suspended, key rejected)", True),
     "TICKET_ASSIGNED": ("Support ticket assigned", True),
     "SUPPORT_RESPONSE": ("Reply on a support ticket", True),
     "TICKET_SLA": ("Support ticket overdue (SLA)", True),

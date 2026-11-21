@@ -73,6 +73,46 @@ def resume_ready_embeddings(session: Session, queue: Queue, batch_size: int) -> 
     return list(documents)
 
 
+# Failures caused by the organization's AI configuration or limits (ai_management), not by the document.
+AI_UNAVAILABLE_CODES = (
+    "AI_NOT_CONFIGURED", "AI_CONFIGURATION_INCOMPLETE", "AI_CONFIGURATION_INVALID", "AI_SUSPENDED",
+    "AI_MODEL_NOT_ALLOWED", "AI_MODEL_NOT_CONFIGURED", "AI_LIMIT_REACHED", "TOKEN_LIMIT_REACHED",
+    "CREDIT_LIMIT_REACHED", "AI_PRICE_UNAVAILABLE", "EMBEDDINGS_UNAVAILABLE",
+)
+
+
+def resume_organization(session: Session, queue: Queue, organization_id, batch_size: int) -> int:
+    """Resume the AI indexing an organization's documents were waiting for, once its AI is available again
+    (activated, a key fixed, a limit raised). Documents searchable by keyword get their vectors; documents that
+    stopped before that are processed again from the failed stage. Returns how many were resumed."""
+    from app.modules.search.model import Chunk
+
+    failed = session.scalars(
+        select(Document)
+        .where(Document.organization_id == organization_id, Document.status == DocumentStatus.FAILED,
+               Document.error["code"].astext.in_(AI_UNAVAILABLE_CODES))
+        .order_by(Document.updated_at).limit(SWEEP_LIMIT).with_for_update(skip_locked=True)
+    ).all()
+    for document in failed:
+        requeue_failed(session, queue, document, actor=None)
+    ready = session.scalars(
+        select(Document)
+        .join(IngestionStage, IngestionStage.document_id == Document.id)
+        .where(Document.organization_id == organization_id, Document.status == DocumentStatus.READY,
+               IngestionStage.stage == Stage.EMBEDDING, IngestionStage.status == StageStatus.FAILED)
+        .order_by(Document.updated_at).limit(SWEEP_LIMIT).with_for_update(of=Document, skip_locked=True)
+    ).all()
+    for document in ready:
+        total = session.scalar(select(func.count()).where(Chunk.document_id == document.id))
+        progress.start(session, document.id, Stage.EMBEDDING)
+        progress.start(session, document.id, Stage.INDEXING)
+        pipeline.enqueue_embedding(queue, session, document, total, batch_size, round_=f":r{int(time.time())}")
+    session.commit()
+    if failed or ready:
+        logger.info("Organization %s: resumed AI indexing of %s document(s)", organization_id, len(failed) + len(ready))
+    return len(failed) + len(ready)
+
+
 def available_providers(runtime) -> set[str]:
     """Providers that can be constructed with the current configuration."""
     available = set()

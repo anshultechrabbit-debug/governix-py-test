@@ -18,6 +18,7 @@ from app.infrastructure.cache.base import Cache
 from app.modules.audit.model import AuditEvent
 from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
+from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm, search_embedder, reserve_question
 from app.modules.rag.conversations import ConversationService
 from app.modules.rag.schema import (
@@ -42,10 +43,10 @@ def get_service(
     runtime = get_runtime()
     # The caller's organization: its model, its key, its shared limits (ai_management.runtime).
     llm = (organization_llm(db, request.app.state.session_factory, settings, principal.organization_id,
-                            fallback=lambda: runtime.llm, user_id=principal.user_id)
+                            fallback=lambda: runtime.llm, user_id=principal.user_id, feature=AIFeature.QA)
            if principal.organization_id else runtime.llm)
     embedder = (search_embedder(db, request.app.state.session_factory, settings, principal.organization_id,
-                                      runtime.embedder, user_id=principal.user_id)
+                                      runtime.embedder, user_id=principal.user_id, feature=AIFeature.QA)
                 if principal.organization_id else runtime.embedder)
     return RAGService(
         db, request.app.state.session_factory, settings, cache,
@@ -119,10 +120,10 @@ def ask_stream(
         # The stream outlives the request's dependencies, so it owns its session.
         with session_factory() as session:
             llm = (organization_llm(session, session_factory, settings, principal.organization_id,
-                                    fallback=lambda: runtime.llm, user_id=principal.user_id)
+                                    fallback=lambda: runtime.llm, user_id=principal.user_id, feature=AIFeature.QA)
                    if principal.organization_id else runtime.llm)
             embedder = (search_embedder(session, session_factory, settings, principal.organization_id,
-                                              runtime.embedder, user_id=principal.user_id)
+                                              runtime.embedder, user_id=principal.user_id, feature=AIFeature.QA)
                         if principal.organization_id else runtime.embedder)
             service = RAGService(
                 session, session_factory, settings, cache,
