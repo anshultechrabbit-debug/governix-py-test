@@ -28,7 +28,7 @@ from app.core.exceptions import AppError, ConflictError, NotFoundError, Permissi
 from app.infrastructure.queue.base import Queue
 from app.infrastructure.storage.base import Storage
 from app.modules.audit.service import record_event
-from app.modules.auth.acl import can_see, ensure_can_write_scope
+from app.modules.auth.acl import can_see, can_write_scope, ensure_can_write_scope
 from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.auth.scope import tenant_id
 from app.modules.categories.model import Category
@@ -120,7 +120,7 @@ class UploadBatchService:
         self.session.flush()
         overridden = 0
         for group_position, group_in in enumerate(request.groups):
-            policy = self._target_policy(principal, group_in.policy_id) if group_in.policy_id else None
+            policy = self._target_policy(principal, group_in.policy_id, for_approval=True) if group_in.policy_id else None
             if group_in.category_id is not None:
                 category = self.categories.get_in_org(organization_id, group_in.category_id)
                 if category is None or not category.is_active:
@@ -230,13 +230,17 @@ class UploadBatchService:
         policy = self.session.get(Policy, policy_id)
         return policy.name if policy is not None and policy.organization_id == organization_id else "another document"
 
-    def _target_policy(self, principal: Principal, policy_id: uuid.UUID) -> Policy:
+    def _target_policy(self, principal: Principal, policy_id: uuid.UUID, *, for_approval: bool = False) -> Policy:
+        """The existing policy a group adds versions to. With for_approval, one this person can see but does not
+        manage (a Branch Manager and a bank-wide policy) is accepted too: its files are uploaded and read, and an
+        Org Admin approves them before they are registered (_confirm_group). Nothing is changed in it meanwhile."""
         policy = self.session.get(Policy, policy_id)
         if policy is None or not can_see(principal, policy.organization_id, policy.branch_id, policy.department_id, policy.id):
             raise NotFoundError("Policy not found.")
         if policy.status != PolicyStatus.ACTIVE:
             raise ConflictError("The policy is archived.", code="INVALID_STATE")
-        ensure_can_write_scope(principal, policy.branch_id, policy.department_id)
+        if not (for_approval and not can_write_scope(principal, policy.branch_id, policy.department_id)):
+            ensure_can_write_scope(principal, policy.branch_id, policy.department_id)
         return policy
 
     # --- files -------------------------------------------------------------------
@@ -529,6 +533,12 @@ def _confirm_group(session, queue, group, pending, documents, actor_id: uuid.UUI
             item.message = f"The document is {document.status.replace('_', ' ')}."
         elif principal is None or not principal.has(Permission.POLICIES_MANAGE):
             item.status, item.message = ItemStatus.NEEDS_REVIEW, "Needs confirmation by a policy manager."
+        elif (target := session.get(Policy, group.policy_id) if group.policy_id else None) is not None and not can_write_scope(
+                principal, target.branch_id, target.department_id):
+            # A new version of a policy this person does not manage (a bank-wide policy): an Org Admin approves it.
+            item.status = ItemStatus.NEEDS_REVIEW
+            item.message = f"Sent to your Org Admin for approval as a new version of “{target.name}”."
+            _request_approval(session, principal, document, target)
         elif (flag := _flag(analysis, group)) is not None:
             item.status, item.message = ItemStatus.NEEDS_REVIEW, flag
         else:
@@ -577,6 +587,32 @@ def _confirm_group(session, queue, group, pending, documents, actor_id: uuid.UUI
             item.version_label = label
         if item.effective_from is None:
             item.effective_from = dated.effective_from
+
+
+def _request_approval(session: Session, principal, document: Document, policy: Policy) -> None:
+    """Tell the organisation's Org Admins that a new version waits for them, once per file."""
+    from app.modules.notifications import service as notifications
+    from app.modules.notifications.model import NotificationType
+    from app.modules.users.model import User
+
+    admins = session.scalars(select(User.id).where(
+        User.organization_id == policy.organization_id, User.role == Role.ORG_ADMIN, User.is_active,
+    )).all()
+    uploader = session.get(User, principal.user_id) if principal.user_id else None
+    who = uploader.full_name if uploader else "A branch manager"
+    notifications.notify(
+        session, admins, NotificationType.VERSION_APPROVAL,
+        f"New version of {policy.name} waiting for your approval",
+        organization_id=policy.organization_id,
+        body=f"{who} uploaded {document.original_filename} as a new version of {policy.name}. Review it to register it.",
+        link=f"/documents/{document.id}",
+        data={"document_id": str(document.id), "policy_id": str(policy.id)},
+        dedupe_key=f"approval:{document.id}",
+    )
+    record_event(
+        session, "document.approval_requested", actor=principal, resource_type="document", resource_id=document.id,
+        details={"filename": document.original_filename, "policy": policy.name, "policy_id": str(policy.id)},
+    )
 
 
 def _flag(analysis: DocumentAnalysis, group: UploadBatchGroup) -> str | None:

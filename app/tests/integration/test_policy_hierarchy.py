@@ -426,3 +426,35 @@ def test_migration_keeps_every_category_and_document(db, test_database_url, clie
     assert db.get(Category, uuid.UUID(clash)).name == f"{circulars.name} (Loan Policy)"
     assert str(db.get(Policy, uuid.UUID(policies["Gold Loan Policy"])).category_id) == subs["Gold Loan"]
     assert len(history(db, policies["Gold Loan Policy"])) == 3
+
+
+def test_a_branch_manager_offers_a_new_version_of_a_bank_wide_policy_for_approval(db, client, app, tenant, admin):
+    """A Branch Manager may not change a bank-wide policy, but may send its new version to an Org Admin."""
+    from app.modules.notifications.model import Notification
+
+    loan = folder(admin, "Loan Policy")
+    gold = folder(admin, "Gold Loan", loan)
+    first = run_batch(admin, app, [{"new_policy_name": "Gold Loan Policy", "category_id": gold,
+                                    "items": [{"filename": "gold-v1.pdf"}]}], [[product_pdf("Gold Loan", 1)]])
+    policy_id = first["groups"][0]["policy_id"]
+    assert db.get(Policy, uuid.UUID(policy_id)).branch_id is None  # bank-wide
+
+    manager = login(client, tenant.manager_a)
+    batch = run_batch(manager, app, [{"policy_id": policy_id, "items": [{"filename": "gold-v2.pdf"}]}],
+                      [[product_pdf("Gold Loan", 2)]])
+    item = batch["groups"][0]["items"][0]
+    assert item["status"] == "needs_review" and "approval" in item["message"]
+    assert len(history(db, policy_id)) == 1  # nothing registered by the Branch Manager
+    notice = db.scalar(select(Notification).where(Notification.user_id == tenant.admin.id,
+                                                  Notification.type == "VERSION_APPROVAL"))
+    assert notice is not None and notice.link == f"/documents/{item['document_id']}"
+    # Approving registers it.
+    analysis = admin.get(f"/documents/{item['document_id']}/analysis").json()["data"]
+    approved = admin.post(f"/documents/{item['document_id']}/confirm", json={
+        "action": "add_version", "policy_id": policy_id,
+        "version": {"version_label": "2", "effective_from": analysis["detected"]["effective_date"]},
+    })
+    assert approved.status_code == 200, approved.text
+    assert [v.version_label for v in history(db, policy_id)] == ["1", "2"]
+    # A direct change to the policy itself is still refused.
+    assert manager.patch(f"/policies/{policy_id}", json={"name": "Renamed"}).status_code in (403, 404)

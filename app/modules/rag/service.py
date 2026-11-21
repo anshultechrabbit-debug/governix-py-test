@@ -63,7 +63,7 @@ from app.modules.rag.evidence import (
 from app.infrastructure.ai.llm.local import LocalLLM
 from app.modules.rag.prompts import (
     MEANING_CHECK_PROMPT, MEANING_CHECK_SCHEMA, OUTPUT_SCHEMA, REASONING_CHECK_PROMPT, REASONING_CHECK_SCHEMA,
-    DIRECT_ANSWER_PROMPT, DIRECT_ANSWER_SCHEMA, RELEVANCE_CHECK_PROMPT, RELEVANCE_CHECK_SCHEMA, SUMMARY_CHECK_PROMPT,
+    DIRECT_ANSWER_PROMPT, DIRECT_ANSWER_SCHEMA, DOCUMENTS_SUMMARY_PROMPT, DOCUMENTS_SUMMARY_SCHEMA, RELEVANCE_CHECK_PROMPT, RELEVANCE_CHECK_SCHEMA, SUMMARY_CHECK_PROMPT,
     SUMMARY_CHECK_SCHEMA, SYSTEM_PROMPT,
     TRANSLATE_PROMPT, TRANSLATE_SCHEMA,
     COMPUTE_PROMPT, COMPUTE_SCHEMA, build_user_prompt, comparison_text, evidence_block,
@@ -260,6 +260,9 @@ HISTORY_KEY_CHARS = 300
 #          model read the question (patterns only without one); small talk in any words is kind "chat"
 #   v77    policy hierarchy: a main policy chosen in the UI covers its sub-policies (categories.tree), and the
 #          evidence and citations name the folder path ("Loan Policy › Gold Loan")
+#   v82    "summarise my documents" and follow-ups ("in summary", "200 words summary") are read by the rewrite as
+#          documents_summary with the length asked for: one AI-written summary of the whole collection from each
+#          version's stored summary (DOCUMENT_SUMMARY), figures checked against those summaries
 #   v81    answers written to be read: short claims that lead with the figure or decision, only what was asked, one
 #          claim for the rows of one table, the policy's rule rather than worked examples or Q&A cases, the policy named
 #          when several answer differently, and a summary of up to two sentences that answers on its own
@@ -270,7 +273,7 @@ HISTORY_KEY_CHARS = 300
 #          claims (_direct_answer), checked like any summary
 #   v78    "which policies do I have?" (DOCUMENT_LIST) lists each policy in the message itself, with its folder, version
 #          in force and the first sentence of its stored summary (no model call), and returns them as no_answer.policies
-ANSWER_CACHE_VERSION = "v81"
+ANSWER_CACHE_VERSION = "v82"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -626,6 +629,8 @@ class RAGService:
         # and what kind of message it is ("documents": which documents are there).
         self._framing_words: dict[str, frozenset[str]] = {}
         self._kinds: dict[str, str | None] = {}
+        # The length the reader asked for, in words, as the rewrite read it ("in 200 words").
+        self._lengths: dict[str, int | None] = {}
         # Instructions to the assistant found in the question and set aside (rag/injection.py).
         self._ignored_instructions: list[str] = []
         # What the reasoning check found wrong in the last attempt, for its one retry (_check_reasoning).
@@ -882,6 +887,7 @@ class RAGService:
         if rewrite is not None:
             self._framing_words[prepared.question] = rewrite.framing
             self._kinds[prepared.question] = rewrite.kind
+            self._lengths[prepared.question] = rewrite.length_words
         plan = plan_query(
             prepared.question,
             ui_mode=None if prepared.mode == "auto" else prepared.mode,
@@ -918,6 +924,10 @@ class RAGService:
             if not rewrite.resolvable:
                 raise _NoAnswer("NEEDS_CONTEXT")
             mentions = self.retriever.policy_mentions(principal, request.question)
+            if self._kinds.get(request.question) == "documents_summary" and not mentions:
+                # "Summarise my documents", or "in summary" / "200 words summary" after they were listed: one summary
+                # of the whole collection, from each document's own summary, at the length asked for.
+                raise self._documents_summary(principal, self._lengths.get(request.question))
             if self._asks_for_document_list(principal, request.question, mentions):
                 # "What documents have you consumed so far?", "Which policies can I ask about?": what the reader
                 # can see, from the catalogue. No passage is read and nothing is said about what they contain.
@@ -1740,18 +1750,12 @@ class RAGService:
         a User sees only the policies assigned to them. choose: the reader asked about "the policy" and there are
         several, so the list asks which one."""
         today = datetime.now(UTC).date()
-        shown: dict[uuid.UUID, tuple[str, PolicyVersion]] = {}
-        for version, name in self._searchable_versions(principal, []):  # oldest first
-            current = shown.get(version.policy_id)
-            # The version in force today; when none is (all are future, or all have ended), the newest.
-            if current is None or not _in_force(current[1], today) or _in_force(version, today):
-                shown[version.policy_id] = (name, version)
-        if not shown:
+        rows = self._catalogue(principal, today)
+        if not rows:
             message = (NO_ASSIGNED_POLICIES_MESSAGE if principal.reads_by_assignment
                        else "There are no documents I can answer from yet. Once a policy is uploaded and processed, "
                             "you can ask about it here.")
             return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=[])
-        rows = sorted(shown.values(), key=lambda row: row[0].lower())
         folders = self._policy_folders([version.policy_id for _name, version in rows[:MAX_LISTED_POLICIES]])
         listed, policies, lines = [], [], []
         for name, version in rows[:MAX_LISTED_POLICIES]:
@@ -1780,6 +1784,57 @@ class RAGService:
                 message += "\n\nSummaries are AI-generated from each policy's text."
             message += f"\n\nAsk about any of them by name, for example “Tell me about the {rows[0][0]}”."
         return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=listed, policies=policies)
+
+    def _catalogue(self, principal: Principal, today: date) -> list[tuple[str, PolicyVersion]]:
+        """(name, version) of every policy the reader can ask about, by name: the version in force today, or the
+        newest when none is. The same ACL as every search, so a User sees only the policies assigned to them."""
+        shown: dict[uuid.UUID, tuple[str, PolicyVersion]] = {}
+        for version, name in self._searchable_versions(principal, []):  # oldest first
+            current = shown.get(version.policy_id)
+            if current is None or not _in_force(current[1], today) or _in_force(version, today):
+                shown[version.policy_id] = (name, version)
+        return sorted(shown.values(), key=lambda row: row[0].lower())
+
+    def _documents_summary(self, principal: Principal, words: int | None) -> _NoAnswer:
+        """One readable summary of all the reader's documents, at the length asked for (about 150 words otherwise).
+
+        Written by one model call from each version's own stored summary (generated from its text when it was
+        indexed), never from passages it did not read. Every figure in it must appear in those summaries, or the
+        list of documents is shown instead. Labelled AI-generated."""
+        listed = self._document_list(principal)
+        rows = self._catalogue(principal, datetime.now(UTC).date())
+        if not rows or not listed.policies:
+            return listed
+        target = max(40, min(words or 150, 600))
+        folders = {p.policy_id: p.folder for p in listed.policies}
+        today = datetime.now(UTC).date()
+        described = []
+        for name, version in rows[:MAX_LISTED_POLICIES]:
+            summary = version.ai_summary or {}
+            about = " ".join(str(summary.get(k) or "") for k in ("overview", "purpose")).strip() or "(no description yet)"
+            state = "in force since" if _in_force(version, today) else "effective"
+            described.append(f"- {name} | folder: {folders.get(version.policy_id) or 'none'} | version {version.version_label}, "
+                             f"{state} {version.effective_from:%d %b %Y} | {about}")
+        source = "\n".join(described)
+        try:
+            result = self._llm_factory().generate_json(
+                DOCUMENTS_SUMMARY_PROMPT.replace("{words}", str(target)), f"Documents:\n{source}",
+                DOCUMENTS_SUMMARY_SCHEMA, context={"task": "documents_summary"},
+            )
+        except LLMUnavailableError:
+            return listed
+        text = str((result.content or {}).get("summary") or "").strip()
+        if str(result.model or "").startswith("local-") or not text:
+            return listed
+        # A figure the stored summaries do not contain would be invented: show the list instead.
+        # The number of documents is known too ("You can ask about 11 documents").
+        allowed = {f.value for f in extract_numeric_facts(f"{source}\n{len(rows)} documents")}
+        if any(f.value not in allowed for f in extract_numeric_facts(text) if f.kind != "date"):
+            logger.info("Dropped a documents summary with a figure its sources do not state")
+            return listed
+        message = (f"{text}\n\nThis summary is AI-generated from each document's own summary. "
+                   "Ask about any document by name for the details, with citations.")
+        return _NoAnswer("DOCUMENT_SUMMARY", message=message, suggestions=listed.suggestions, policies=listed.policies)
 
     def _policy_folders(self, policy_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
         """Each policy's folder as people read it: "Loan Policy › Home Loan"."""

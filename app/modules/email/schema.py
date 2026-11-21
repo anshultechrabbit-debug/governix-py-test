@@ -26,6 +26,7 @@ NOTIFICATION_EVENTS: dict[str, tuple[str, bool]] = {
     "TICKET_FORWARDED": ("Support ticket forwarded", False),
     "TICKET_UPDATED": ("Support ticket status changed", False),
     "POLICY_ASSIGNED": ("Policy assigned to me", True),
+    "VERSION_APPROVAL": ("New policy version waiting for my approval", True),
     "POLICY_EXPIRING": ("Policy expiring soon", True),
     "NEW_POLICY": ("New policy published", False),
     "POLICY_UPDATED": ("Policy updated", False),

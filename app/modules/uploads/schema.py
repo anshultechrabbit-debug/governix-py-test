@@ -122,6 +122,9 @@ class ExistingPolicyMatch(BaseModel):
     reasons: list[str]
     # False when the policy is visible but outside the scope this person manages.
     can_add_version: bool
+    # True when this person manages policies but not this one (a Branch Manager and a bank-wide policy): the file can
+    # still be offered as its new version, and an Org Admin approves it before it is registered.
+    needs_approval: bool = False
 
 
 class IdenticalDocument(BaseModel):

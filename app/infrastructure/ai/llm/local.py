@@ -40,6 +40,9 @@ class LocalLLM(LLMProvider):
         if context.get("task") == "change_summary":
             lines = context.get("lines", [])[:5]
             return self._result({"summary": ("Important changes: " + "; ".join(lines) + ".") if lines else ""}, started)
+        if context.get("task") == "documents_summary":
+            # No model to write prose: the list of documents is shown instead.
+            return self._result({"summary": ""}, started)
         if context.get("task") == "direct_answer":
             # No model to read the claims: no Yes/No is written (the answer keeps its rule).
             return self._result({"verdict": None, "answer": None}, started)

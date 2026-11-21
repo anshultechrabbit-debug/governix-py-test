@@ -124,6 +124,10 @@ Rules:
 - kind is "documents" when the message asks which documents, policies or files you have, have read, were
   given or can access ("What documents have you consumed so far?", "Which policies can I ask you about?").
   It is never "documents" for which documents a customer must submit, or for what a document says.
+  kind is "documents_summary" when the message asks for a summary or overview of the reader's documents or
+  policies taken together, not of one named document and not a rule inside them: "summarise my documents",
+  "give me an overview of all my policies", or a follow-up such as "in summary", "shorter", "in 200 words" or
+  "explain them briefly" after the documents were listed or summarised in the conversation.
   kind is "chat" when the message is only small talk and asks nothing about policies or documents: a greeting,
   thanks, "how are you", a reply such as "I am fine" or "ok", in any language or spelling ("kem cho",
   "namaste", "how are youuu"). A message that also asks something ("hi, what is the LTV?") is "question".
@@ -140,6 +144,9 @@ Rules:
   as its subject ("What is new in the latest policy?", "What changed in version 3?");
   "current" otherwise: the rule in force, one moment ("What was the fee in 2019?"), one named version, or a
   question that is not about time at all.
+- length_words: the length the reader asks for, in words, when they ask for one ("in 200 words", "half a page"
+  is about 250, "in two lines" about 40, "briefly" about 80), read from the latest message or, for a follow-up,
+  the earlier one it continues; null when no length is asked for.
 - yes_no is true when the message asks for a yes or no answer, in any word order, spelling or language: "do I
   get it?", "if my salary is 40000 do i get?", "am I eligible?", "can I prepay?", "is a co-applicant needed?",
   "will my loan be approved?", "salary 40k eligible?". It is false for questions asking what, which, how much,
@@ -154,11 +161,13 @@ SCHEMA = {
         "resolvable": {"type": "boolean"},
         "language": {"type": "string"},
         "framing_words": {"type": "array", "items": {"type": "string"}},
-        "kind": {"type": "string", "enum": ["question", "documents", "chat"]},
+        "kind": {"type": "string", "enum": ["question", "documents", "documents_summary", "chat"]},
         "time_scope": {"type": "string", "enum": ["current", "changes", "since", "compare"]},
         "yes_no": {"type": "boolean"},
+        "length_words": {"type": ["integer", "null"]},
     },
-    "required": ["standalone_question", "resolvable", "language", "framing_words", "kind", "time_scope", "yes_no"],
+    "required": ["standalone_question", "resolvable", "language", "framing_words", "kind", "time_scope", "yes_no",
+                 "length_words"],
 }
 
 
@@ -180,6 +189,8 @@ class Rewrite:
     # The model's reading that the message asks for a yes or no ("if my salary is 40000 do I get?"), in any wording;
     # None when no model read it (evidence.asks_yes_no, word patterns, decides then).
     yes_no: bool | None = None
+    # The length the reader asked for, in words ("in 200 words"), as the model read it; None when not asked.
+    length_words: int | None = None
     # The model's reading of what the question asks about in time, by meaning: "changes" (across the versions: "Did
     # the fee go up?"), "since" (when it started), "compare" (what changed between versions) or "current". It
     # decides the plan (query_plan.plan_query); None: no model read it, and the word patterns decide.
@@ -426,18 +437,23 @@ def standalone_question(llm: LLMProvider | None, question: str, history: list) -
         w for phrase in (raw_framing if isinstance(raw_framing, list) else []) if isinstance(phrase, str)
         for w in re.findall(r"[a-z]+", phrase.lower())
     )
-    kind = content.get("kind") if content.get("kind") in ("documents", "chat") else "question"
+    kind = content.get("kind") if content.get("kind") in ("documents", "documents_summary", "chat") else "question"
+    words = content.get("length_words")
+    length_words = words if isinstance(words, int) and not isinstance(words, bool) and 10 <= words <= 1000 else None
     yes_no = content.get("yes_no") if isinstance(content.get("yes_no"), bool) else None
     scope = content.get("time_scope")
     time_scope = scope if scope in ("current", "changes", "since", "compare") else None
     if plain:
         # Nothing asked for a rewrite: only spelling may change ("morgtage" -> "mortgage"), never the wording.
         if rewritten != question and _spelling_only(question, rewritten):
-            return Rewrite(rewritten[:2000], "normalized", framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no)
-        return Rewrite(question, framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no)
+            return Rewrite(rewritten[:2000], "normalized", framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no,
+                           length_words=length_words)
+        return Rewrite(question, framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no,
+                           length_words=length_words)
     if possible and not content.get("resolvable", True) and not foreign:
         # Not about the earlier conversation: search it as asked.
-        return Rewrite(question, framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no)
+        return Rewrite(question, framing=framing, kind=kind, time_scope=time_scope, yes_no=yes_no,
+                           length_words=length_words)
     # A translation always has something to search for; only an unresolved reference does not. The
     # model's flag is not trusted alone: it marks good rewrites ("And for personal loans?" -> "What
     # is the LTV for personal loans?") unresolvable at random. A rewrite that is the message as typed
@@ -448,7 +464,7 @@ def standalone_question(llm: LLMProvider | None, question: str, history: list) -
         reason = None  # already standalone: nothing was rewritten
     language = " ".join(str(content.get("language") or "").split()) or None
     return Rewrite(rewritten[:2000], reason, resolvable=resolvable, language=language, framing=framing, kind=kind,
-                   time_scope=time_scope, yes_no=yes_no)
+                   time_scope=time_scope, yes_no=yes_no, length_words=length_words)
 
 
 # How alike a corrected word must be to the word typed ("morgtage" / "mortgage" is 0.875, "fee" / "rate" 0.29).

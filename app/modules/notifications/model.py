@@ -29,6 +29,8 @@ class NotificationType(StrEnum):
     SECURITY_ALERT = "SECURITY_ALERT"
     # AI quota / token / credit threshold reached for an organisation.
     AI_THRESHOLD = "AI_THRESHOLD"
+    # A Branch Manager uploaded a new version of a policy they do not manage: an Org Admin approves it.
+    VERSION_APPROVAL = "VERSION_APPROVAL"
 
 
 class Notification(UUIDPrimaryKeyMixin, TimestampMixin, Base):

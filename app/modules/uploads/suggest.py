@@ -25,6 +25,7 @@ from app.modules.auth.acl import can_write_scope, visible_clause
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.auth.scope import tenant_id
 from app.modules.categories.model import Category
+from app.modules.categories.tree import path_names
 from app.modules.documents.model import Document
 from app.modules.documents.repository import ACTIVE_STATUSES
 from app.modules.ingestion.analysis.analyzer import OPENING_CHARS, OPENING_PAGES
@@ -201,15 +202,18 @@ def _existing_policy(
     repository = PolicyRepository(session)
     current = repository.current_versions([policy.id], datetime.now(UTC).date()).get(policy.id)
     category = session.get(Category, policy.category_id)
+    manages = principal.has(Permission.POLICIES_MANAGE)
+    in_scope = can_write_scope(principal, policy.branch_id, policy.department_id)
     return ExistingPolicyMatch(
         policy_id=policy.id, name=policy.name, category_id=policy.category_id,
-        category_name=category.name if category else None,
+        # Where it is filed, as people read it: "Loan Policy › Personal Loan".
+        category_name=path_names(session, [category]).get(category.id) if category else None,
         current_version_label=current.version_label if current else None,
         current_effective_from=current.effective_from if current else None,
         version_count=repository.version_counts([policy.id]).get(policy.id, 0),
         reasons=[signal.detail for signal in best.signals if signal.matched],
-        can_add_version=principal.has(Permission.POLICIES_MANAGE)
-        and can_write_scope(principal, policy.branch_id, policy.department_id),
+        can_add_version=manages and in_scope,
+        needs_approval=manages and not in_scope,
     )
 
 

@@ -98,6 +98,7 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "relationship.created": ("Documents linked", "Policies"),
     "upload_batch.created": ("Bulk upload started", "Documents"),
     "upload_batch.published": ("Draft upload published", "Documents"),
+    "document.approval_requested": ("New version sent for approval", "Documents"),
     "classification.overridden": ("AI classification overridden", "Documents"),
     "document.uploaded": ("Document uploaded", "Documents"),
     "document.duplicate_override": ("Duplicate uploaded anyway", "Documents"),
@@ -384,6 +385,8 @@ SENTENCES: dict[str, Callable[[_Context], str]] = {
     "policy.recategorized": lambda c: f"{c.actor} moved the document {c.target} from {_quote(c.d.get('from_category') or 'another folder')} "
     f"to {_quote(c.d.get('to_category') or 'another folder')}.",
     "upload_batch.published": lambda c: f"{c.actor} published a draft upload of {c.d.get('files')} file(s).",
+    "document.approval_requested": lambda c: f"{c.actor} sent {_quote(c.d.get('filename') or 'a file')} for approval as a "
+    f"new version of {_quote(c.d.get('policy') or 'a policy')}.",
     "classification.overridden": lambda c: f"{c.actor} filed {_quote(c.d.get('filename') or 'a document')} in "
     f"{_quote(c.d.get('chosen') or 'another folder')} instead of the AI's suggestion {_quote(c.d.get('suggested') or '')}.",
     "policy.created": lambda c: f"{c.actor} created the policy {c.target}"

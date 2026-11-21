@@ -436,13 +436,15 @@ function NoAnswer({ reason, onRetry }: { reason: Answer["no_answer"]; onRetry: (
       </div>
     );
   }
-  if (reason.reason === "DOCUMENT_LIST") {
-    // "Which documents do you have?": the policies this reader can ask about, from the catalogue (no search).
+  if (reason.reason === "DOCUMENT_LIST" || reason.reason === "DOCUMENT_SUMMARY") {
+    // "Which documents do you have?" (the list, each with what it covers) or "summarise my documents" (one summary
+    // of them all): from the catalogue and each document's stored summary, no search. The message holds it all.
+    const listed = reason.message.includes("•");
     return (
       <div className="p-4 sm:p-5">
-        <p className="font-medium text-ink">Documents you can ask about</p>
-        <p className="mt-1 text-sm text-ink-soft">{reason.message}</p>
-        {!!reason.suggestions.length && (
+        <p className="font-medium text-ink">{reason.reason === "DOCUMENT_SUMMARY" ? "Your documents in brief" : "Documents you can ask about"}</p>
+        <p className="mt-1 whitespace-pre-line text-sm leading-relaxed text-ink-soft">{reason.message}</p>
+        {!listed && !!reason.suggestions.length && (
           <ul className="mt-3 list-disc space-y-0.5 pl-4 text-sm text-ink-soft">{reason.suggestions.map((policy) => <li key={policy}>{policy}</li>)}</ul>
         )}
       </div>
