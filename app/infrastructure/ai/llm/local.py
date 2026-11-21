@@ -40,6 +40,12 @@ class LocalLLM(LLMProvider):
         if context.get("task") == "change_summary":
             lines = context.get("lines", [])[:5]
             return self._result({"summary": ("Important changes: " + "; ".join(lines) + ".") if lines else ""}, started)
+        if context.get("task") == "plan_hierarchy":
+            # No model to read the documents: no new folders are proposed (uploads.classify.plan_hierarchy).
+            return self._result({"documents": []}, started)
+        if context.get("task") == "classify_policy":
+            # No model to read the document: the folders' keywords place it (uploads.classify).
+            return self._result({}, started)
         if context.get("task") == "support_triage":
             # No model to read the ticket: its category recommends (tickets.triage).
             return self._result({}, started)

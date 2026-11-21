@@ -81,7 +81,10 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "department.deleted": ("Department deleted", "Branches & departments"),
     "category.created": ("Category created", "Policies"),
     "category.updated": ("Category updated", "Policies"),
+    "category.moved": ("Sub-policy moved", "Policies"),
+    "category.reordered": ("Policy folders reordered", "Policies"),
     "policy.created": ("Policy created", "Policies"),
+    "policy.recategorized": ("Document moved to another folder", "Policies"),
     "policy.updated": ("Policy updated", "Policies"),
     "policy.deleted": ("Policy deleted", "Policies"),
     "policy.moved": ("Policy moved", "Policies"),
@@ -94,6 +97,8 @@ ACTIONS: dict[str, tuple[str, str]] = {
     "policy_version.restored": ("Version restored", "Policies"),
     "relationship.created": ("Documents linked", "Policies"),
     "upload_batch.created": ("Bulk upload started", "Documents"),
+    "upload_batch.published": ("Draft upload published", "Documents"),
+    "classification.overridden": ("AI classification overridden", "Documents"),
     "document.uploaded": ("Document uploaded", "Documents"),
     "document.duplicate_override": ("Duplicate uploaded anyway", "Documents"),
     "document.analyzed": ("Document read", "Documents"),
@@ -373,6 +378,14 @@ SENTENCES: dict[str, Callable[[_Context], str]] = {
     "department.deleted": _deleted("department"),
     "category.created": lambda c: f"{c.actor} created the policy category {c.target}.",
     "category.updated": lambda c: c.edited("the category"),
+    "category.moved": lambda c: f"{c.actor} moved {c.target} "
+    + (f"under the main policy {_quote(c.d['to_parent'])}." if c.d.get("to_parent") else "to the top level as a main policy."),
+    "category.reordered": lambda c: f"{c.actor} changed the position of the policy folder {c.target}.",
+    "policy.recategorized": lambda c: f"{c.actor} moved the document {c.target} from {_quote(c.d.get('from_category') or 'another folder')} "
+    f"to {_quote(c.d.get('to_category') or 'another folder')}.",
+    "upload_batch.published": lambda c: f"{c.actor} published a draft upload of {c.d.get('files')} file(s).",
+    "classification.overridden": lambda c: f"{c.actor} filed {_quote(c.d.get('filename') or 'a document')} in "
+    f"{_quote(c.d.get('chosen') or 'another folder')} instead of the AI's suggestion {_quote(c.d.get('suggested') or '')}.",
     "policy.created": lambda c: f"{c.actor} created the policy {c.target}"
     + (f" in {_quote(c.d['category'])}." if c.d.get("category") else "."),
     "policy.updated": lambda c: c.edited("the policy"),

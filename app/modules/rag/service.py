@@ -43,6 +43,7 @@ from app.infrastructure.cache.base import Cache, build_cache_key
 from app.modules.audit.service import record_event
 from app.modules.auth.acl import visible_clause
 from app.modules.auth.permissions import Principal
+from app.modules.categories.tree import with_sub_policies
 from app.modules.citations.numerics import extract_numeric_facts
 from app.modules.documents.model import Document, DocumentStatus
 from app.modules.policies.model import Policy, PolicyStatus, PolicyVersion, VersionStatus
@@ -255,7 +256,9 @@ HISTORY_KEY_CHARS = 300
 #   v76    meaning decides, not the words: a question the word-count gate would refuse goes to a model relevance
 #          check (_covers_by_meaning) that reads the passages; the rewrite's time_scope decides the plan whenever a
 #          model read the question (patterns only without one); small talk in any words is kind "chat"
-ANSWER_CACHE_VERSION = "v76"
+#   v77    policy hierarchy: a main policy chosen in the UI covers its sub-policies (categories.tree), and the
+#          evidence and citations name the folder path ("Loan Policy › Gold Loan")
+ANSWER_CACHE_VERSION = "v77"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -629,6 +632,10 @@ class RAGService:
         confirms what was already shown.
         """
         started = time.perf_counter()
+        if request.category_ids:
+            # A main policy chosen in the UI covers its sub-policies; a sub-policy covers itself only.
+            request = request.model_copy(update={"category_ids": with_sub_policies(
+                self.session, principal.organization_id, request.category_ids)})
         asked = strip_instructions(request.question)[0]
         if (principal.reads_by_assignment and not principal.assigned_policy_ids
                 and not is_greeting(asked) and key_terms(asked)):

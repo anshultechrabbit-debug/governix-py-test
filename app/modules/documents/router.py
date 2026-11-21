@@ -22,6 +22,7 @@ from app.modules.documents import viewer
 from app.modules.documents.schema import (
     ChunkRead,
     DocumentDetail,
+    DocumentListItem,
     DocumentRead,
     DocumentUpdate,
     DuplicateCheck,
@@ -56,14 +57,19 @@ Service = Annotated[DocumentService, Depends(get_service)]
 
 
 def _detail(service: DocumentService, document) -> DocumentDetail:
-    from app.modules.uploads.model import ItemStatus, UploadBatchItem
+    from app.modules.uploads.model import ItemStatus, UploadBatch, UploadBatchItem
 
     detail = DocumentDetail.model_validate(document)
     detail.progress = Progress.model_validate(progress_module.snapshot(service.session, document.id))
     item = service.session.scalar(select(UploadBatchItem).where(UploadBatchItem.document_id == document.id))
     if item is not None:
         detail.upload_batch_id = item.batch_id
-        detail.filed_by_batch = item.status == ItemStatus.PROCESSING
+        waiting = item.status == ItemStatus.PROCESSING
+        # A draft is filed only when its upload is published, so a person may confirm it by hand meanwhile.
+        detail.draft = waiting and service.session.scalar(
+            select(UploadBatch.publish).where(UploadBatch.id == item.batch_id)
+        ) is False
+        detail.filed_by_batch = waiting and not detail.draft
     return detail
 
 
@@ -107,7 +113,7 @@ def check_duplicates(body: DuplicateCheck, principal: Uploader, service: Service
     return ok(service.check_duplicates(principal, body.sha256))
 
 
-@router.get("", response_model=ApiResponse[Page[DocumentRead]])
+@router.get("", response_model=ApiResponse[Page[DocumentListItem]])
 def list_documents(
     principal: Reader,
     service: Service,
@@ -124,7 +130,47 @@ def list_documents(
         branch_id=branch_id, department_id=department_id, search=search,
         limit=page.limit, offset=page.offset,
     )
-    return ok(Page(items=[DocumentRead.model_validate(d) for d in items], total=total, **page.model_dump()))
+    return ok(Page(items=_with_versions(service.session, items), total=total, **page.model_dump()))
+
+
+def _with_versions(session, documents) -> list[DocumentListItem]:
+    """Each file with the document and version it is registered as, and who uploaded it (three queries a page)."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func
+
+    from app.modules.categories.schema import lifecycle
+    from app.modules.policies.model import Policy, PolicyVersion, VersionStatus
+    from app.modules.users.model import User
+    from app.modules.versions.timeline import timeline_state
+
+    version_ids = [d.policy_version_id for d in documents if d.policy_version_id]
+    versions = {v.id: v for v in session.scalars(select(PolicyVersion).where(PolicyVersion.id.in_(version_ids)))} if version_ids else {}
+    policy_ids = list({d.policy_id for d in documents if d.policy_id})
+    policies = dict(session.execute(select(Policy.id, Policy.name).where(Policy.id.in_(policy_ids))).all()) if policy_ids else {}
+    counts = dict(session.execute(
+        select(PolicyVersion.policy_id, func.count()).where(
+            PolicyVersion.policy_id.in_(policy_ids), PolicyVersion.status == VersionStatus.ACTIVE,
+        ).group_by(PolicyVersion.policy_id)
+    ).all()) if policy_ids else {}
+    uploader_ids = list({d.uploaded_by_id for d in documents if d.uploaded_by_id})
+    uploaders = dict(session.execute(select(User.id, User.full_name).where(User.id.in_(uploader_ids))).all()) if uploader_ids else {}
+    today = datetime.now(UTC).date()
+    result = []
+    for document in documents:
+        item = DocumentListItem.model_validate(document)
+        item.policy_name = policies.get(document.policy_id)
+        item.version_count = counts.get(document.policy_id) if document.policy_id else None
+        item.uploaded_by_name = uploaders.get(document.uploaded_by_id)
+        if (version := versions.get(document.policy_version_id)) is not None:
+            state = timeline_state(version, today)
+            item.version_label, item.version_number = version.version_label, version.version_number
+            item.revision_number = version.revision_number
+            item.timeline_state, item.lifecycle = state, lifecycle(version.status, state)
+            item.effective_from, item.effective_to = version.effective_from, version.effective_to
+            item.effective_date_source = version.effective_date_source
+        result.append(item)
+    return result
 
 
 @router.get("/{document_id}", response_model=ApiResponse[DocumentDetail])

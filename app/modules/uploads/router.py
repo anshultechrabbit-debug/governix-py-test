@@ -14,7 +14,22 @@ from app.modules.auth.dependencies import require
 from app.modules.auth.permissions import Permission, Principal
 from app.infrastructure.ai.llm.base import LLMUnavailableError
 from app.modules.ai_management.runtime import organization_llm
-from app.modules.uploads.schema import BatchCreate, BatchItemRead, BatchRead, BatchSummary, PolicySuggestion
+from app.modules.uploads.schema import (
+    BatchCreate,
+    BatchItemRead,
+    BatchRead,
+    BatchSummary,
+    HierarchyPlan,
+    HierarchyPlanRequest,
+    PlannedPlacement,
+    PolicySuggestion,
+)
+from app.modules.uploads.classify import PlanInput, plan_hierarchy
+from app.modules.auth.scope import tenant_id
+from app.modules.categories.model import Category
+from app.modules.policies.model import Policy
+from app.modules.policies.repository import policy_visible
+from sqlalchemy import select
 from app.modules.uploads.service import UploadBatchService
 from app.modules.uploads.suggest import suggest_policy
 from app.workers.runtime import get_runtime
@@ -41,13 +56,16 @@ def suggest(
     principal: Uploader, db: Annotated[Session, Depends(get_db)],
     settings: Annotated[Settings, Depends(get_app_settings)], file: Annotated[UploadFile, File()],
     policy_id: Annotated[uuid.UUID | None, Form()] = None,
+    classify: Annotated[bool, Form()] = False,
 ):
     """Read a file's opening pages while uploads are being arranged: the policy name the
     document states, its category, and an existing policy it most likely is a version of.
 
     `policy_id` is the policy the file is meant for: when the file matches it, it is the
-    one reported, even if another policy matches too. Nothing is stored; the file is
-    uploaded for real once the arrangement is sent.
+    one reported, even if another policy matches too. `classify=true` adds the AI
+    classification: the main policy, sub-policy (or a new sub-policy) and document it belongs
+    to, with the reason and a confidence. Nothing is stored or created; the file is uploaded
+    for real once the arrangement is sent, after the person confirmed where it goes.
     """
     runtime = get_runtime()
     try:
@@ -58,8 +76,38 @@ def suggest(
         llm = None
     return ok(suggest_policy(
         db, principal, settings, file.file, intended_policy_id=policy_id,
-        llm_factory=(lambda: llm) if llm is not None else None,
+        llm_factory=(lambda: llm) if llm is not None else None, classify_hierarchy=classify,
     ))
+
+
+@router.post("/hierarchy-plan", response_model=ApiResponse[HierarchyPlan])
+def hierarchy_plan(
+    body: HierarchyPlanRequest, principal: Uploader, db: Annotated[Session, Depends(get_db)],
+    settings: Annotated[Settings, Depends(get_app_settings)],
+):
+    """Suggest main policies and sub-policies for every document of an upload at once ("Loan Policy" with
+    "Mortgage" and "Personal Loan"), reusing existing folders by name. Nothing is created: the person applies
+    the plan in the upload screen, which creates the new folders it names."""
+    runtime = get_runtime()
+    try:
+        llm = (organization_llm(db, runtime.session_factory, settings, principal.organization_id,
+                                fallback=lambda: runtime.llm, user_id=principal.user_id)
+               if principal.organization_id else runtime.llm)
+    except LLMUnavailableError:
+        llm = None
+    organization_id = tenant_id(principal)
+    categories = list(db.scalars(select(Category).where(Category.organization_id == organization_id)))
+    # An existing document stays where it is filed; only documents the caller can see count.
+    policy_ids = [d.policy_id for d in body.documents if d.policy_id]
+    folders = dict(db.execute(
+        select(Policy.id, Policy.category_id).where(Policy.id.in_(policy_ids), policy_visible(principal))
+    ).all()) if policy_ids else {}
+    placements, source, ai_reached = plan_hierarchy(
+        categories,
+        [PlanInput(d.key, d.name, d.about, folders.get(d.policy_id)) for d in body.documents],
+        (lambda: llm) if llm is not None else None,
+    )
+    return ok(HierarchyPlan(placements=[PlannedPlacement(**p) for p in placements], source=source, ai_available=ai_reached))
 
 
 @router.post("/batches", response_model=ApiResponse[BatchRead], status_code=201)
@@ -103,6 +151,14 @@ def _item_read(service: UploadBatchService, principal: Principal, batch_id: uuid
 def start_batch(batch_id: uuid.UUID, request: Request, principal: Uploader, service: Service):
     """All files sent: stop waiting for missing ones and confirm every group whose files are analysed."""
     service.start(principal, batch_id, request.app.state.session_factory)
+    return ok(service.get(principal, batch_id))
+
+
+@router.post("/batches/{batch_id}/publish", response_model=ApiResponse[BatchRead])
+def publish_batch(batch_id: uuid.UUID, request: Request, principal: Uploader, service: Service):
+    """Publish an upload saved as a draft: its analysed files are registered as planned (files the
+    analysis flagged still wait for a review). Publishing a published upload changes nothing."""
+    service.publish(principal, batch_id, request.app.state.session_factory)
     return ok(service.get(principal, batch_id))
 
 

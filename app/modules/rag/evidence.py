@@ -20,6 +20,7 @@ from app.infrastructure.ai.reranker.base import RerankerProvider
 from app.modules.auth.acl import can_see
 from app.modules.auth.permissions import Principal
 from app.modules.categories.model import Category
+from app.modules.categories.tree import path_names
 from app.modules.citations.numerics import extract_numeric_facts, sentence_at
 from app.modules.ingestion.analysis.dates import DATE_FRAGMENT, MONTH_YEAR
 from app.modules.rag.injection import strip_instructions
@@ -638,6 +639,8 @@ def build_evidence(
     sources = provenance(session, selected)
     neighbours = expand_context(session, selected)
     categories = _categories(session, [s.category_id for s in sources.values()])
+    # "Loan Policy › Gold Loan": the model and the citation see which sub-policy a passage is from.
+    folder_names = path_names(session, categories.values())
 
     def context(candidate, earlier: bool) -> list[str]:
         texts = []
@@ -663,7 +666,7 @@ def build_evidence(
             rerank_score=round(candidate.rerank_score, 4),
             context_before=" ".join(before)[-context_chars:] if context_chars else "",
             context_after=" ".join(after)[:context_chars] if context_chars else "",
-            category_name=category.name if category else None,
+            category_name=folder_names.get(category.id, category.name) if category else None,
             authority_rank=category.authority_rank if category else 0,
         ))
     _attach_amendments(session, principal, items, filters.version_scope.effective_date())

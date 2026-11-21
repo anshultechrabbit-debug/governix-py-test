@@ -12,6 +12,7 @@ from datetime import date, datetime
 from enum import StrEnum
 
 from sqlalchemy import Date, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import text as sql
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -20,6 +21,7 @@ from app.core.database import Base, TimestampMixin, UUIDPrimaryKeyMixin
 class BatchStatus(StrEnum):
     UPLOADING = "uploading"  # files are still being sent
     PROCESSING = "processing"  # all files received; analysis / confirmation running
+    DRAFT = "draft"  # saved as a draft: every file analysed, nothing registered until it is published
     COMPLETED = "completed"  # every group confirmed
     ATTENTION = "attention"  # finished, but some items need a person
 
@@ -47,6 +49,9 @@ class UploadBatch(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     branch_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("branches.id", ondelete="RESTRICT"))
     department_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("departments.id", ondelete="RESTRICT"))
     status: Mapped[str] = mapped_column(String(20), default=BatchStatus.UPLOADING)
+    # False: "Save as draft". Files are uploaded and analysed, but no version is registered (and nothing
+    # becomes searchable) until a policy manager publishes the batch or confirms each file in review.
+    publish: Mapped[bool] = mapped_column(default=True, server_default=sql("true"))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_upload_batches_org_created", "organization_id", "created_at"),)

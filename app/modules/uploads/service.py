@@ -14,12 +14,13 @@ Undated versions keep the arranged order (see `plan_dates`).
 """
 
 import logging
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import BinaryIO
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import Settings
@@ -30,13 +31,15 @@ from app.modules.audit.service import record_event
 from app.modules.auth.acl import can_see, ensure_can_write_scope
 from app.modules.auth.permissions import Permission, Principal, Role
 from app.modules.auth.scope import tenant_id
+from app.modules.categories.model import Category
 from app.modules.categories.repository import CategoryRepository
+from app.modules.categories.tree import path_names
 from app.modules.documents.model import Document, DocumentStatus
 from app.modules.documents.service import DocumentService
 from app.modules.ingestion.confirmation import ConfirmationService, ConfirmRequest, detected_effective_date
 from app.modules.ingestion.model import Decision, DocumentAnalysis
 from app.modules.ingestion.schema import PolicyInput, VersionInput
-from app.modules.policies.model import DateSource, Policy, PolicyStatus
+from app.modules.policies.model import DateSource, Policy, PolicyStatus, PolicyVersion, VersionStatus
 from app.modules.uploads.model import (
     BatchStatus,
     GroupStatus,
@@ -45,7 +48,14 @@ from app.modules.uploads.model import (
     UploadBatchGroup,
     UploadBatchItem,
 )
-from app.modules.uploads.schema import BatchCreate, BatchGroupRead, BatchItemRead, BatchRead, BatchSummary
+from app.modules.uploads.schema import (
+    BatchCreate,
+    BatchGroupIn,
+    BatchGroupRead,
+    BatchItemRead,
+    BatchRead,
+    BatchSummary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +77,19 @@ SETTLED_DOCUMENT_STATES = {
 TERMINAL_ITEM_STATES = {ItemStatus.CONFIRMED, ItemStatus.NEEDS_REVIEW, ItemStatus.FAILED, ItemStatus.CANCELLED}
 # Finished without anything left for a person to do.
 DONE_ITEM_STATES = {ItemStatus.CONFIRMED, ItemStatus.CANCELLED}
+DRAFT_MESSAGE = "Saved as a draft: publish the upload to register these versions."
+# "V2", "v 2", "Version 2" and "2" are the same version label.
+_LABEL_PREFIX = re.compile(r"^\s*(?:version|ver\.?|v)\s*(?=\d)", re.IGNORECASE)
+
+
+def clean_label(label: str | None) -> str | None:
+    """A version label as entered, without a "v"/"version" prefix before its number."""
+    text = _LABEL_PREFIX.sub("", (label or "").strip()).strip()
+    return text[:50] or None
+
+
+def _same_label(label: str) -> str:
+    return clean_label(label).lower() if clean_label(label) else ""
 
 
 class UploadBatchService:
@@ -91,9 +114,11 @@ class UploadBatchService:
         batch = UploadBatch(
             organization_id=organization_id, created_by_id=principal.user_id,
             branch_id=branch_id, department_id=department_id, status=BatchStatus.UPLOADING,
+            publish=request.publish,
         )
         self.session.add(batch)
         self.session.flush()
+        overridden = 0
         for group_position, group_in in enumerate(request.groups):
             policy = self._target_policy(principal, group_in.policy_id) if group_in.policy_id else None
             if group_in.category_id is not None:
@@ -101,6 +126,7 @@ class UploadBatchService:
                 if category is None or not category.is_active:
                     raise ValidationError("Category not found.")
             name = " ".join((group_in.new_policy_name or "").split()) or None
+            self._check_labels(group_in, policy, name)
             group = UploadBatchGroup(
                 organization_id=organization_id, batch_id=batch.id, position=group_position,
                 policy_id=policy.id if policy else None, new_policy_name=name,
@@ -112,16 +138,97 @@ class UploadBatchService:
                 self.session.add(UploadBatchItem(
                     organization_id=organization_id, batch_id=batch.id, group_id=group.id, position=position,
                     original_filename=item_in.filename[:500],
-                    version_label=(item_in.version_label or "").strip() or None,
+                    version_label=clean_label(item_in.version_label),
                     effective_from=item_in.effective_from, status=ItemStatus.AWAITING_FILE,
                 ))
+            overridden += self._record_classification(principal, batch, group, group_in, policy)
         record_event(
             self.session, "upload_batch.created", actor=principal, resource_type="upload_batch",
             resource_id=batch.id,
-            details={"groups": len(request.groups), "files": sum(len(g.items) for g in request.groups)},
+            details={"groups": len(request.groups), "files": sum(len(g.items) for g in request.groups),
+                     "publish": request.publish,
+                     "ai_classified": sum(1 for g in request.groups if g.classification is not None),
+                     "classification_overridden": overridden},
         )
         self.session.commit()
         return batch
+
+    def _check_labels(self, group_in: BatchGroupIn, policy: Policy | None, name: str | None) -> None:
+        """Version labels are unique within one document: refuse a plan that repeats one, or that gives an
+        existing document a label it already has, before any file is sent."""
+        what = f'"{policy.name}"' if policy else (f'"{name}"' if name else "this document")
+        seen: dict[str, str] = {}
+        for item in group_in.items:
+            if not (key := _same_label(item.version_label)):
+                continue
+            if key in seen:
+                raise ValidationError(
+                    f"Version {clean_label(item.version_label)} is given twice for {what} "
+                    f"({seen[key]} and {item.filename}).", code="DUPLICATE_VERSION_LABEL",
+                )
+            seen[key] = item.filename
+        if policy is None or not seen:
+            return
+        taken = {
+            _same_label(label): label
+            for label in self.session.scalars(select(PolicyVersion.version_label).where(
+                PolicyVersion.policy_id == policy.id, PolicyVersion.status == VersionStatus.ACTIVE,
+            ))
+        }
+        if clash := next((key for key in seen if key in taken), None):
+            raise ConflictError(
+                f"{what} already has version {taken[clash]} ({seen[clash]}). Choose another version number; "
+                "an earlier version is never overwritten.",
+                code="VERSION_CONFLICT", details={"type": "VERSION_LABEL_EXISTS", "label": taken[clash]},
+            )
+
+    def _record_classification(self, principal: Principal, batch: UploadBatch, group: UploadBatchGroup,
+                               group_in: BatchGroupIn, policy: Policy | None) -> int:
+        """Record in the audit log when the administrator filed a group elsewhere than the AI suggested."""
+        suggestion = group_in.classification
+        if suggestion is None or suggestion.source in (None, "none"):
+            return 0
+        chosen_category = self.session.get(Category, group.category_id) if group.category_id else None
+        suggested_category = (self.categories.get_in_org(batch.organization_id, suggestion.category_id)
+                              if suggestion.category_id else None)
+        if suggestion.policy_id is not None:
+            agreed = policy is not None and policy.id == suggestion.policy_id
+        elif suggested_category is not None:
+            agreed = policy is None and chosen_category is not None and chosen_category.id == suggested_category.id
+        elif suggestion.new_sub_policy_name:
+            # Accepting a new sub-policy means it was created under the suggested main policy and chosen.
+            agreed = (policy is None and chosen_category is not None
+                      and chosen_category.name.lower() == suggestion.new_sub_policy_name.lower()
+                      and chosen_category.parent_id == suggestion.main_policy_id)
+        else:
+            return 0
+        if agreed:
+            return 0
+        names = path_names(self.session, [c for c in (chosen_category, suggested_category) if c is not None])
+        suggested = (
+            f"new version of {self._policy_name(suggestion.policy_id, batch.organization_id)}" if suggestion.policy_id
+            else names.get(suggested_category.id) if suggested_category is not None
+            else f"new sub-policy {suggestion.new_sub_policy_name}"
+        )
+        chosen = (f"new version of {policy.name}" if policy is not None
+                  else names.get(chosen_category.id) if chosen_category is not None else "the detected folder")
+        record_event(
+            self.session, "classification.overridden", actor=principal, resource_type="upload_batch",
+            resource_id=batch.id,
+            details={"filename": group_in.items[0].filename, "files": len(group_in.items),
+                     "suggested": suggested, "chosen": chosen, "source": suggestion.source,
+                     "confidence": suggestion.confidence, "reason": suggestion.reason,
+                     "suggested_category_id": str(suggestion.category_id) if suggestion.category_id else None,
+                     "suggested_policy_id": str(suggestion.policy_id) if suggestion.policy_id else None,
+                     "chosen_category_id": str(group.category_id) if group.category_id else None,
+                     "chosen_policy_id": str(policy.id) if policy else None},
+        )
+        return 1
+
+    def _policy_name(self, policy_id: uuid.UUID, organization_id: uuid.UUID) -> str:
+        """The suggested document's name for the audit log; never another organisation's."""
+        policy = self.session.get(Policy, policy_id)
+        return policy.name if policy is not None and policy.organization_id == organization_id else "another document"
 
     def _target_policy(self, principal: Principal, policy_id: uuid.UUID) -> Policy:
         policy = self.session.get(Policy, policy_id)
@@ -207,6 +314,34 @@ class UploadBatchService:
         self.session.expire_all()
         return self.session.get(UploadBatch, batch_id)
 
+    def publish(self, principal: Principal, batch_id: uuid.UUID, session_factory: sessionmaker[Session]) -> UploadBatch:
+        """Publish a draft upload: register every analysed file as planned, as a published upload would.
+
+        Files the analysis flagged still wait for a person; the versions are registered by the publisher.
+        """
+        if not principal.has(Permission.POLICIES_MANAGE):
+            raise PermissionDeniedError("Publishing versions requires policy management rights.")
+        batch = self._visible_batch(principal, batch_id)
+        if batch.publish:
+            return batch
+        batch.publish = True
+        if batch.status == BatchStatus.DRAFT:
+            batch.status = BatchStatus.PROCESSING
+        groups = list(self.session.scalars(select(UploadBatchGroup).where(UploadBatchGroup.batch_id == batch.id)))
+        for group in groups:
+            if group.message == DRAFT_MESSAGE:
+                group.message = None
+        files = self.session.scalar(select(func.count()).select_from(UploadBatchItem).where(UploadBatchItem.batch_id == batch.id))
+        record_event(
+            self.session, "upload_batch.published", actor=principal, resource_type="upload_batch",
+            resource_id=batch.id, details={"files": files, "groups": len(groups)},
+        )
+        self.session.commit()
+        for group in groups:
+            advance_group(session_factory, self.queue, group.id, actor_id=principal.user_id)
+        self.session.expire_all()
+        return self.session.get(UploadBatch, batch_id)
+
     # --- reading -------------------------------------------------------------------
 
     def _visible_batch(self, principal: Principal, batch_id: uuid.UUID) -> UploadBatch:
@@ -240,7 +375,7 @@ class UploadBatchService:
                 message=item.message, policy_version_id=item.policy_version_id,
             ))
         return BatchRead(
-            id=batch.id, status=batch.status, created_at=batch.created_at, completed_at=batch.completed_at,
+            id=batch.id, status=batch.status, publish=batch.publish, created_at=batch.created_at, completed_at=batch.completed_at,
             created_by_id=batch.created_by_id, counts=_counts(items),
             groups=[BatchGroupRead(
                 id=g.id, position=g.position, policy_id=g.policy_id, policy_name=policy_names.get(g.policy_id),
@@ -260,7 +395,7 @@ class UploadBatchService:
         grouped: dict[uuid.UUID, list[UploadBatchItem]] = {}
         for item in items:
             grouped.setdefault(item.batch_id, []).append(item)
-        return [BatchSummary(id=b.id, status=b.status, created_at=b.created_at, completed_at=b.completed_at,
+        return [BatchSummary(id=b.id, status=b.status, publish=b.publish, created_at=b.created_at, completed_at=b.completed_at,
                              counts=_counts(grouped.get(b.id, []))) for b in batches]
 
 
@@ -317,8 +452,14 @@ def advance_for_document(session_factory: sessionmaker[Session], queue: Queue, d
         advance_group(session_factory, queue, group_id)
 
 
-def advance_group(session_factory: sessionmaker[Session], queue: Queue, group_id: uuid.UUID) -> None:
-    """Confirm a group once all of its files have settled. Safe to call any number of times."""
+def advance_group(
+    session_factory: sessionmaker[Session], queue: Queue, group_id: uuid.UUID, *, actor_id: uuid.UUID | None = None,
+) -> None:
+    """Confirm a group once all of its files have settled. Safe to call any number of times.
+
+    A draft batch stops here: its files stay analysed and waiting, nothing is registered, until it is
+    published. `actor_id` is who registers the versions (the publisher); the batch's creator otherwise.
+    """
     with session_factory() as session:
         # One transaction; the group row lock serialises concurrent callers (two
         # analyses finishing at once), and each version runs in its own savepoint.
@@ -336,17 +477,43 @@ def advance_group(session_factory: sessionmaker[Session], queue: Queue, group_id
         pending = [i for i in items if i.status == ItemStatus.PROCESSING]
         if any(documents[i.document_id].status not in SETTLED_DOCUMENT_STATES for i in pending):
             return  # still in the pipeline
-        _confirm_group(session, queue, group, pending, documents)
+        batch = session.get(UploadBatch, group.batch_id)
+        if not batch.publish:
+            for item in pending:
+                document = documents[item.document_id]
+                if document.status == DocumentStatus.FAILED:
+                    item.status, item.message = ItemStatus.FAILED, (document.error or {}).get("message") or "Processing failed."
+            group.message = DRAFT_MESSAGE
+            session.flush()
+            refresh_statuses(session, group.batch_id)
+            _mark_draft(session, batch)
+            session.commit()
+            return
+        _confirm_group(session, queue, group, pending, documents, actor_id=actor_id)
         refresh_statuses(session, group.batch_id)
         session.commit()
 
 
-def _confirm_group(session, queue, group, pending, documents) -> None:
+def _mark_draft(session: Session, batch: UploadBatch) -> None:
+    """A draft batch whose files have all arrived and been analysed is ready to publish."""
+    if batch.status in (BatchStatus.COMPLETED, BatchStatus.ATTENTION):
+        return
+    items = session.scalars(select(UploadBatchItem).where(UploadBatchItem.batch_id == batch.id)).all()
+    if any(item.status == ItemStatus.AWAITING_FILE for item in items):
+        return
+    waiting = [item.document_id for item in items if item.status == ItemStatus.PROCESSING and item.document_id]
+    states = set(session.scalars(select(Document.status).where(Document.id.in_(waiting)))) if waiting else set()
+    if states <= SETTLED_DOCUMENT_STATES:
+        batch.status = BatchStatus.DRAFT
+
+
+def _confirm_group(session, queue, group, pending, documents, actor_id: uuid.UUID | None = None) -> None:
     from app.modules.auth.dependencies import principal_from_user
     from app.modules.users.model import User
 
     batch = session.get(UploadBatch, group.batch_id)
-    user = session.get(User, batch.created_by_id) if batch.created_by_id else None
+    user_id = actor_id or batch.created_by_id
+    user = session.get(User, user_id) if user_id else None
     principal = principal_from_user(user, session) if user is not None and user.is_active else None
     analyses = {a.document_id: a for a in session.scalars(
         select(DocumentAnalysis).where(DocumentAnalysis.document_id.in_([i.document_id for i in pending]))

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,6 +48,24 @@ class DocumentRead(BaseModel):
     ready_at: datetime | None
 
 
+class DocumentListItem(DocumentRead):
+    """A file in the documents list, with the document and version it is registered as (none while unregistered)."""
+
+    policy_name: str | None = None
+    version_label: str | None = None
+    version_number: int | None = None
+    revision_number: int | None = None
+    # published | superseded | archived (categories.schema.lifecycle); null while not a version yet.
+    lifecycle: str | None = None
+    # current | historical | scheduled | withdrawn
+    timeline_state: str | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    effective_date_source: str | None = None
+    version_count: int | None = None  # active versions of its document
+    uploaded_by_name: str | None = None
+
+
 class DocumentDetail(DocumentRead):
     pdf_metadata: dict[str, Any]
     duplicate_override_reason: str | None
@@ -55,6 +73,8 @@ class DocumentDetail(DocumentRead):
     # Part of a bulk upload that will file it with the rest of its group: no one confirms it by hand.
     upload_batch_id: uuid.UUID | None = None
     filed_by_batch: bool = False
+    # Part of an upload saved as a draft: registered when the upload is published (or confirmed here).
+    draft: bool = False
 
 
 class DocumentUpdate(BaseModel):

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.auth.acl import visible_clause
 from app.modules.auth.permissions import Principal
+from app.modules.categories.tree import with_sub_policies
 from app.modules.policies.model import Policy, PolicyVersion, VersionStatus
 from app.modules.versions.timeline import effective_on
 
@@ -38,7 +39,8 @@ class PolicyRepository:
     ) -> tuple[list[Policy], int]:
         query = select(Policy).where(policy_visible(principal))
         if category_id:
-            query = query.where(Policy.category_id == category_id)
+            # A main policy covers the documents of its sub-policies too.
+            query = query.where(Policy.category_id.in_(with_sub_policies(self.session, principal.organization_id, [category_id])))
         if status:
             query = query.where(Policy.status == status)
         if search:

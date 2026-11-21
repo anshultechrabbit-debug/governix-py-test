@@ -41,6 +41,7 @@ from app.modules.ingestion.extraction import PageExtraction, extract_page
 from app.modules.ingestion.structure import LayoutStats
 from app.modules.policies.model import Policy, PolicyStatus
 from app.modules.policies.repository import PolicyRepository, policy_visible
+from app.modules.uploads.classify import classify_hierarchy as place_in_hierarchy
 from app.modules.uploads.schema import ExistingPolicyMatch, IdenticalDocument, PolicySuggestion
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ CANDIDATES = 5
 def suggest_policy(
     session: Session, principal: Principal, settings: Settings, file: BinaryIO,
     intended_policy_id: uuid.UUID | None = None, llm_factory: Callable[[], LLMProvider] | None = None,
+    classify_hierarchy: bool = False,
 ) -> PolicySuggestion:
     organization_id = tenant_id(principal)
     with tempfile.NamedTemporaryFile(suffix=".pdf") as spool:
@@ -92,20 +94,26 @@ def suggest_policy(
     title = content_title(named, meta.title) or (
         meta.title if meta.title.value else fallback_title(opening_text, classification.name)
     )
+    about = describe(read, naming_text, title.value)
+    existing = _existing_policy(
+        session, principal, meta, normalize_title(title.value or ""), classification.category_id, intended_policy_id,
+    )
     return PolicySuggestion(
         readable=True,
         name=title.value,
-        about=describe(read, naming_text, title.value),
+        about=about,
         name_source=title.source,
         name_confidence=title.confidence,
         category_id=classification.category_id,
         category_name=classification.name,
         version_label=meta.version_label.value,
         effective_date=meta.effective_date,
-        existing_policy=_existing_policy(
-            session, principal, meta, normalize_title(title.value or ""), classification.category_id, intended_policy_id,
-        ),
+        existing_policy=existing,
         identical_document=identical,
+        classification=place_in_hierarchy(
+            list(categories), title=title.value, about=about, first_page=pages[0].text, opening_text=opening_text,
+            existing=existing, llm_factory=llm_factory,
+        ) if classify_hierarchy else None,
     )
 
 

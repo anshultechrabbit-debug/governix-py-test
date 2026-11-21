@@ -13,8 +13,11 @@ from app.modules.categories import contents
 from app.modules.categories.schema import (
     CategoryCreate,
     CategoryDocument,
+    CategoryMove,
+    CategoryPosition,
     CategoryRead,
     CategorySummary,
+    CategoryTreeNode,
     CategoryUpdate,
     PendingUpload,
 )
@@ -46,8 +49,24 @@ def categories_overview(principal: PolicyReader, service: Service, include_inact
     return ok(service.overview(principal, include_inactive=include_inactive))
 
 
+@router.get("/tree", response_model=ApiResponse[list[CategoryTreeNode]])
+def categories_tree(
+    principal: PolicyReader, service: Service, include_inactive: bool = False,
+    search: Annotated[str | None, Query(max_length=200)] = None,
+    include_empty_system: bool = False,
+):
+    """Main policies with their sub-policies, in display order, with sub-policy, document and version
+    counts over what the caller can see. A main policy's totals include its sub-policies.
+
+    The starter folders named after a kind of document ("Policies", "Circulars", "SOPs" ...) are left out
+    while empty, unless `include_empty_system=true`."""
+    return ok(service.tree(principal, include_inactive=include_inactive, search=search,
+                           include_empty_system=include_empty_system))
+
+
 @router.post("", response_model=ApiResponse[CategoryRead], status_code=201)
 def create_category(body: CategoryCreate, principal: CategoryAdmin, service: Service):
+    """A main policy, or a sub-policy when `parent_id` names a main policy (one level only)."""
     return ok(CategoryRead.model_validate(service.create(principal, body)))
 
 
@@ -59,6 +78,25 @@ def get_category(category_id: uuid.UUID, principal: PolicyReader, service: Servi
 @router.patch("/{category_id}", response_model=ApiResponse[CategoryRead])
 def update_category(category_id: uuid.UUID, body: CategoryUpdate, principal: CategoryAdmin, service: Service):
     return ok(CategoryRead.model_validate(service.update(principal, category_id, body)))
+
+
+@router.post("/{category_id}/move", response_model=ApiResponse[CategoryRead])
+def move_category(category_id: uuid.UUID, body: CategoryMove, principal: CategoryAdmin, service: Service):
+    """Put a sub-policy under another main policy, or make it a main policy (`parent_id` null).
+
+    Its documents and versions go with it. Requires `confirm=true` (409 MOVE_REQUIRES_CONFIRMATION
+    otherwise); a folder with sub-policies of its own never becomes a sub-policy (409 HAS_SUB_POLICIES).
+    """
+    return ok(CategoryRead.model_validate(service.move(principal, category_id, body.parent_id, confirm=body.confirm)))
+
+
+@router.post("/{category_id}/position", response_model=ApiResponse[CategoryRead])
+def position_category(category_id: uuid.UUID, body: CategoryPosition, principal: CategoryAdmin, service: Service):
+    """Drag and drop: place a folder after or before a sibling (main policies among main policies,
+    sub-policies within their main policy)."""
+    return ok(CategoryRead.model_validate(
+        service.position(principal, category_id, after_id=body.after_id, before_id=body.before_id)
+    ))
 
 
 @router.get("/{category_id}/documents", response_model=ApiResponse[Page[CategoryDocument]])

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.ai.embeddings.base import EmbeddingProvider
 from app.infrastructure.cache.base import Cache, CacheScope, build_cache_key
+from app.modules.categories.tree import with_sub_policies
 from app.modules.audit.service import record_event
 from app.modules.auth.acl import visible_clause
 from app.modules.auth.permissions import Principal
@@ -193,6 +194,8 @@ class SearchService:
             return response
 
         filters = build_filters(request)
+        # A main policy covers its sub-policies; a sub-policy itself only (categories.tree).
+        filters.category_ids = with_sub_policies(self.session, principal.organization_id, filters.category_ids)
         result = retrieve_with_variants(
             principal, self.retriever, self.embedder, self.cache, request.query, filters, limit=request.limit,
             rephrase=self.rephrase,

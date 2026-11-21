@@ -14,6 +14,7 @@ from app.modules.auth.scope import tenant_id
 from app.modules.branches.repository import BranchRepository
 from app.modules.categories.model import Category
 from app.modules.categories.repository import CategoryRepository
+from app.modules.categories.tree import path_names
 from app.modules.departments.repository import DepartmentRepository
 from app.infrastructure.storage.base import Storage
 from app.modules.documents.model import Document, DocumentStatus
@@ -132,10 +133,21 @@ class PolicyService:
         policy = self.get(principal, policy_id)
         ensure_can_write_scope(principal, policy.branch_id, policy.department_id)
         changes = data.model_dump(exclude_unset=True, exclude_none=True)
-        if "category_id" in changes and self.categories.get_in_org(policy.organization_id, changes["category_id"]) is None:
-            raise ValidationError("Category not found.")
-        if changes.get("category_id", policy.category_id) != policy.category_id:
+        old_category = self.session.get(Category, policy.category_id)
+        new_category = old_category
+        if "category_id" in changes:
+            new_category = self.categories.get_in_org(policy.organization_id, changes["category_id"])
+            if new_category is None:
+                raise ValidationError("Category not found.")
+            if not new_category.is_active and new_category.id != policy.category_id:
+                raise ValidationError(f'"{new_category.name}" is archived. Choose an active policy folder.')
+        moved = new_category.id != policy.category_id
+        if moved:
             policy.display_order = None  # arranged positions belong to the old category
+            # Documents and chunks carry the category for filtering (category-scoped search and questions):
+            # keep every version's copy in step, or the moved document would vanish from its new folder.
+            self.session.execute(update(Document).where(Document.policy_id == policy.id).values(category_id=new_category.id))
+            self.session.execute(update(Chunk).where(Chunk.policy_id == policy.id).values(category_id=new_category.id))
         if "name" in changes:
             changes["name"] = " ".join(changes["name"].split())
             policy.normalized_name = normalize_title(changes["name"])
@@ -147,6 +159,14 @@ class PolicyService:
             self.session, "policy.updated", actor=principal, resource_type="policy", resource_id=policy.id,
             details={"changes": {k: str(v) for k, v in changes.items()}},
         )
+        if moved:
+            names = path_names(self.session, [old_category, new_category])
+            record_event(
+                self.session, "policy.recategorized", actor=principal, resource_type="policy", resource_id=policy.id,
+                details={"from_category_id": str(old_category.id) if old_category else None,
+                         "from_category": names.get(old_category.id) if old_category else None,
+                         "to_category_id": str(new_category.id), "to_category": names.get(new_category.id)},
+            )
         self.session.commit()
         return policy
 
