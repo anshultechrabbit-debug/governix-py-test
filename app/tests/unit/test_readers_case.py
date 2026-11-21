@@ -183,3 +183,18 @@ def test_a_figure_neither_the_reader_nor_the_rule_gives_is_still_invented():
     [result] = validate_claims([{"text": "The borrower's credit score of 690 meets the minimum.", "evidence_ids": ["E1"]}],
                                {"E1": ELIGIBILITY}, key_terms(THRESHOLDS), THRESHOLDS)
     assert not result.valid and not result.wording_only
+
+
+
+def test_a_yes_no_question_is_known_by_the_models_reading_not_its_words():
+    """The rewrite model says whether a message asks for a yes or no ("if mine salary is 40000 do i get ?"); the
+    answer reports its verdict as a JSON field, so no wording of the question or the answer is matched."""
+    from app.modules.rag.prompts import DIRECT_ANSWER_SCHEMA, OUTPUT_SCHEMA
+    from app.modules.rag.query_rewrite import SCHEMA, Rewrite
+    from app.modules.rag.service import VERDICTS
+
+    assert "yes_no" in SCHEMA["required"] and SCHEMA["properties"]["yes_no"] == {"type": "boolean"}
+    assert Rewrite("if mine salary is 40000 do i get ?").yes_no is None  # no model read it: not guessed from words
+    for schema in (OUTPUT_SCHEMA, DIRECT_ANSWER_SCHEMA):
+        assert "verdict" in schema["required"]
+        assert set(schema["properties"]["verdict"]["enum"]) - {None} == VERDICTS

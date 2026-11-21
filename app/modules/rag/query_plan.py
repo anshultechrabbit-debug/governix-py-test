@@ -147,6 +147,8 @@ class QueryPlan:
     as_of_dates: list[date] = field(default_factory=list)
     # "Tell me about the mortgage policy": what the named policy is about as a whole (RAGService._asks_overview).
     overview: bool = False
+    # The question asks for a yes or no ("if my salary is 40000 do I get?"): the answer leads with it.
+    yes_no: bool = False
 
     def describe(self) -> dict:
         return {
@@ -157,6 +159,7 @@ class QueryPlan:
             "version_ids": [str(v) for v in self.version_ids],
             "explanation": self.explanation,
             **({"overview": True} if self.overview else {}),
+            **({"yes_no": True} if self.yes_no else {}),
         }
 
 

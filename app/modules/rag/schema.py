@@ -66,11 +66,26 @@ class Claim(BaseModel):
     citations: list[int]
 
 
+class ListedPolicy(BaseModel):
+    """A policy the reader can ask about, in a DOCUMENT_LIST reply ("which policies do I have?")."""
+
+    policy_id: uuid.UUID
+    name: str
+    folder: str | None = None  # "Loan Policy › Home Loan"
+    version_label: str
+    effective_from: date
+    in_force: bool
+    # The first sentence of the version's own summary (AI-generated from its text when it was indexed); null if none.
+    summary: str | None = None
+
+
 class NoAnswer(BaseModel):
     reason: str
     message: str
     suggestions: list[str]
     missing_terms: list[str] = []
+    # DOCUMENT_LIST only: the policies, each with its version in force and a one-line summary.
+    policies: list[ListedPolicy] = []
 
 
 class AnswerResponse(BaseModel):

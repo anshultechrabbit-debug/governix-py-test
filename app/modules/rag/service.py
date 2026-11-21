@@ -43,7 +43,8 @@ from app.infrastructure.cache.base import Cache, build_cache_key
 from app.modules.audit.service import record_event
 from app.modules.auth.acl import visible_clause
 from app.modules.auth.permissions import Principal
-from app.modules.categories.tree import with_sub_policies
+from app.modules.categories.model import Category
+from app.modules.categories.tree import path_names, with_sub_policies
 from app.modules.citations.numerics import extract_numeric_facts
 from app.modules.documents.model import Document, DocumentStatus
 from app.modules.policies.model import Policy, PolicyStatus, PolicyVersion, VersionStatus
@@ -62,7 +63,8 @@ from app.modules.rag.evidence import (
 from app.infrastructure.ai.llm.local import LocalLLM
 from app.modules.rag.prompts import (
     MEANING_CHECK_PROMPT, MEANING_CHECK_SCHEMA, OUTPUT_SCHEMA, REASONING_CHECK_PROMPT, REASONING_CHECK_SCHEMA,
-    RELEVANCE_CHECK_PROMPT, RELEVANCE_CHECK_SCHEMA, SUMMARY_CHECK_PROMPT, SUMMARY_CHECK_SCHEMA, SYSTEM_PROMPT,
+    DIRECT_ANSWER_PROMPT, DIRECT_ANSWER_SCHEMA, RELEVANCE_CHECK_PROMPT, RELEVANCE_CHECK_SCHEMA, SUMMARY_CHECK_PROMPT,
+    SUMMARY_CHECK_SCHEMA, SYSTEM_PROMPT,
     TRANSLATE_PROMPT, TRANSLATE_SCHEMA,
     COMPUTE_PROMPT, COMPUTE_SCHEMA, build_user_prompt, comparison_text, evidence_block,
 )
@@ -77,7 +79,7 @@ from app.modules.rag.query_rewrite import (
     standalone_question, without_opener,
 )
 from app.modules.rag.query_rewrite import SYSTEM_PROMPT as REWRITE_PROMPT
-from app.modules.rag.schema import AnswerResponse, AskRequest, Claim, NoAnswer, Source
+from app.modules.rag.schema import AnswerResponse, AskRequest, Claim, ListedPolicy, NoAnswer, Source
 from app.modules.rag.validation import ABSENCE_PROBLEM, EvidenceText, TermIndex, validate_claims
 from app.modules.search.model import Chunk
 from app.modules.search.retrieval import (
@@ -258,7 +260,14 @@ HISTORY_KEY_CHARS = 300
 #          model read the question (patterns only without one); small talk in any words is kind "chat"
 #   v77    policy hierarchy: a main policy chosen in the UI covers its sub-policies (categories.tree), and the
 #          evidence and citations name the folder path ("Loan Policy › Gold Loan")
-ANSWER_CACHE_VERSION = "v77"
+#   v80    a yes/no question is recognised only by the model's reading (rewrite.yes_no), and the answer's verdict is
+#          a field of its JSON (verdict), never matched words; without a verdict or summary, _direct_answer writes it
+#   v79    yes/no questions in any wording ("if my salary is 40000 do i get?", the rewrite's yes_no) lead with Yes/No in
+#          the reader's words; when the model's answer gives the rule alone, one call writes the Yes/No from the verified
+#          claims (_direct_answer), checked like any summary
+#   v78    "which policies do I have?" (DOCUMENT_LIST) lists each policy in the message itself, with its folder, version
+#          in force and the first sentence of its stored summary (no model call), and returns them as no_answer.policies
+ANSWER_CACHE_VERSION = "v80"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
@@ -544,13 +553,29 @@ def has_words(text: str) -> bool:
     return any(ch.isalnum() for ch in text)
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9])")
+SUMMARY_LINE_CHARS = 240
+
+
+def _first_sentence(text: str | None) -> str | None:
+    """The opening sentence of a stored summary, cut at a word if long."""
+    text = " ".join(str(text or "").split())
+    if not text:
+        return None
+    first = _SENTENCE_END.split(text, maxsplit=1)[0]
+    if len(first) > SUMMARY_LINE_CHARS:
+        first = first[:SUMMARY_LINE_CHARS].rsplit(" ", 1)[0].rstrip(",;:") + "…"
+    return first
+
+
 class _NoAnswer(Exception):
     def __init__(self, reason: str, missing_terms: list[str] | None = None, suggestions: list[str] | None = None,
-                 message: str | None = None) -> None:
+                 message: str | None = None, policies: list | None = None) -> None:
         self.reason = reason
         self.missing_terms = missing_terms or []
         self.suggestions = suggestions
         self.message = message
+        self.policies = policies or []
 
 
 @dataclass
@@ -862,6 +887,9 @@ class RAGService:
             date_order=self.settings.DATE_ORDER,
             time_scope=rewrite.time_scope if rewrite is not None else None,
         )
+        # Whether the question asks for a yes or no is the model's understanding of it, never a word list: without a
+        # model there is no written answer to lead with one anyway.
+        plan.yes_no = bool(rewrite is not None and rewrite.yes_no)
         return prepared, rewrite, named, plan
 
     def _run_pipeline(
@@ -1721,20 +1749,43 @@ class RAGService:
                             "you can ask about it here.")
             return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=[])
         rows = sorted(shown.values(), key=lambda row: row[0].lower())
-        listed = []
+        folders = self._policy_folders([version.policy_id for _name, version in rows[:MAX_LISTED_POLICIES]])
+        listed, policies, lines = [], [], []
         for name, version in rows[:MAX_LISTED_POLICIES]:
             since = version.effective_from
-            when = "in force since" if _in_force(version, today) else "effective"
+            in_force = _in_force(version, today)
+            when = "in force since" if in_force else "effective"
             listed.append(f"{name} (Version {version.version_label}, {when} {since.day} {since:%b %Y})")
+            summary = _first_sentence((version.ai_summary or {}).get("overview") or (version.ai_summary or {}).get("purpose"))
+            policies.append(ListedPolicy(
+                policy_id=version.policy_id, name=name, folder=folders.get(version.policy_id),
+                version_label=version.version_label, effective_from=since, in_force=in_force, summary=summary,
+            ))
+            lines.append(f"• {name} (Version {version.version_label}, {when} {since.day} {since:%b %Y})"
+                         + (f": {summary}" if summary else ""))
         whose = "assigned to you" if principal.reads_by_assignment else "you can access"
         count = f"{len(rows)} {'policy' if len(rows) == 1 else 'policies'}"
-        message = f"I answer from the {count} {whose}, and cite the passage for every point."
         if choose and len(rows) > 1:
             message = (f"Which policy do you mean? There are {count} {whose}. Ask about one by name, for example "
                        f"“Tell me about the {rows[0][0]}”.")
-        if len(rows) > MAX_LISTED_POLICIES:
-            message += f" The first {MAX_LISTED_POLICIES}, by name:"
-        return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=listed)
+        else:
+            # The list itself, with what each policy covers, so "what policies do I have?" is answered in full.
+            message = f"You have {count} {whose}:\n\n" + "\n".join(lines)
+            if len(rows) > MAX_LISTED_POLICIES:
+                message += f"\n\n(The first {MAX_LISTED_POLICIES} by name.)"
+            if any(p.summary for p in policies):
+                message += "\n\nSummaries are AI-generated from each policy's text."
+            message += f"\n\nAsk about any of them by name, for example “Tell me about the {rows[0][0]}”."
+        return _NoAnswer("DOCUMENT_LIST", message=message, suggestions=listed, policies=policies)
+
+    def _policy_folders(self, policy_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
+        """Each policy's folder as people read it: "Loan Policy › Home Loan"."""
+        if not policy_ids:
+            return {}
+        rows = self.session.execute(select(Policy.id, Category).join(Category, Category.id == Policy.category_id)
+                                    .where(Policy.id.in_(policy_ids))).all()
+        names = path_names(self.session, [category for _pid, category in rows])
+        return {pid: names.get(category.id) for pid, category in rows}
 
     def _salient_coverage(self, principal: Principal, question: str, evidence: EvidenceSet,
                           ignore: set[str] | frozenset[str] = frozenset()) -> tuple[float, list[str]]:
@@ -2279,6 +2330,11 @@ class RAGService:
         summary = self._summary(request.question, content.get("summary"), valid, texts, claims,
                                 subject=self._subject(request.question),
                                 calculations=_calculations_used(calculations, claims, numbering))
+        if plan.yes_no and claims and (summary is None or content.get("verdict") not in VERDICTS):
+            # A yes/no question answered with the rule alone ("Your income of Rs 40,000 is below the Rs 60,000
+            # minimum"), or whose answer lost its summary: the yes or no it asked for, written from the verified
+            # claims and checked like any summary.
+            summary = self._direct_answer(request.question, valid, texts, claims, numbering, calculations) or summary
         if unchecked := _unchecked_figures(request.question, claims):
             # "I am 27, earn Rs 65,000 and have a 760 score": an answer that checks the income and the score
             # but not the age reads as a "yes" it is not. Say so, and give no overall verdict.
@@ -2597,6 +2653,28 @@ class RAGService:
             return None
         return result.text
 
+    def _direct_answer(self, question: str, valid: list, texts: dict[str, EvidenceText], claims: list[Claim],
+                       numbering: dict, calculations) -> str | None:
+        """The Yes/No a yes/no question asked for, from the verified claims only. One short model call; the sentence
+        then passes the same checks as any summary (_summary: the evidence its claims cite, and the meaning check),
+        so it can add nothing they do not say. None when there is no model or it does not settle the question."""
+        statements = "\n".join(f"- {claim.text}" for claim in claims)
+        try:
+            result = self._llm_factory().generate_json(
+                DIRECT_ANSWER_PROMPT, f"Question: <<<{question}>>>\n\nVerified statements:\n{statements}",
+                DIRECT_ANSWER_SCHEMA, context={"task": "direct_answer"},
+            )
+        except LLMUnavailableError:
+            return None
+        if str(result.model or "").startswith("local-"):
+            return None
+        content = result.content or {}
+        sentence = " ".join(str(content.get("answer") or "").split())
+        if content.get("verdict") not in VERDICTS or not sentence:
+            return None  # the statements do not settle it
+        return self._summary(question, sentence, valid, texts, claims, subject=self._subject(question),
+                             calculations=_calculations_used(calculations, claims, numbering))
+
     def _verify_citations(self, principal: Principal, evidence_ids: set[str], items) -> set[str]:
         """Re-check in the database that every cited chunk exists, is READY and visible."""
         chunk_ids = {items[e].candidate.chunk_id: e for e in evidence_ids if e in items}
@@ -2684,6 +2762,7 @@ class RAGService:
                 # An off-topic answer leaves out words the documents do contain; listing
                 # them as "not mentioned in your documents" would mislead.
                 missing_terms=[] if no_answer.reason == "ANSWER_OFF_TOPIC" else no_answer.missing_terms,
+                policies=getattr(no_answer, "policies", []),
             ),
             # Why the last written answer was withheld, for the audit trail.
             plan={**plan.describe(), **({"checks": checks} if (checks := [
@@ -2920,6 +2999,10 @@ def _explain_not_found(reason: str, evidence: EvidenceSet, *, claim: bool = Fals
     suggestions = [f"What does {'' if name.lower().startswith('the ') else 'the '}{name} say in “{section}”?"
                    for section, name in topics]
     return message, suggestions
+
+
+# The answer a model gives a yes/no question, as data in its JSON (never read from the wording of the answer).
+VERDICTS = frozenset({"yes", "no", "depends"})
 
 
 def _unchecked_figures(question: str, claims: list[Claim]) -> list[str]:
