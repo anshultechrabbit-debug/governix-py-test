@@ -19,22 +19,52 @@ def _clean_key(value: str) -> str:
     return value
 
 
+def _clean_url(value: str | None) -> str | None:
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return None
+    if not value.startswith(("https://", "http://")) or any(ch.isspace() for ch in value):
+        raise ValueError("Enter the provider's API address, starting with https:// (or http:// on a private network).")
+    return value
+
+
+# Providers that need no secret: only the server address.
+NO_KEY_PROVIDERS = (AIProvider.OLLAMA, AIProvider.LOCAL)
+
+
 class APIKeyCreate(BaseModel):
-    provider: AIProvider = AIProvider.OPENAI
+    """A connection to an AI provider: its key and, where the provider is not fixed, its API address. Any
+    OpenAI-compatible API works with provider "openai_compatible" (Gemini, Groq, Mistral, DeepSeek, Together,
+    Azure OpenAI, vLLM, LM Studio ...); Ollama needs only its address."""
+
+    provider: AIProvider
     # None: from the key itself (an OpenAI "sk-admin-" key is an Admin key).
     kind: KeyKind | None = None
-    api_key: str = Field(min_length=8, max_length=500)
+    api_key: str | None = Field(None, max_length=500)
     label: str | None = Field(None, max_length=100)
+    # The provider's API address. Required for openai_compatible; optional elsewhere (the provider's usual one).
+    base_url: str | None = Field(None, max_length=300)
     # Admin key only: count this OpenAI project's spend and tokens, not the whole OpenAI organization's.
     openai_project_id: str | None = Field(None, max_length=64, pattern=r"^proj_[A-Za-z0-9]+$")
 
     @field_validator("api_key")
     @classmethod
-    def _key(cls, value: str) -> str:
-        return _clean_key(value)
+    def _key(cls, value: str | None) -> str | None:
+        return _clean_key(value) if value and value.strip() else None
+
+    @field_validator("base_url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        return _clean_url(value)
 
     @model_validator(mode="after")
     def _kind(self):
+        if self.api_key is None:
+            if self.provider not in NO_KEY_PROVIDERS:
+                raise ValueError("Paste the provider's API key.")
+            self.api_key = "no-key-needed"
+        if self.provider == AIProvider.OPENAI_COMPATIBLE and not self.base_url:
+            raise ValueError("Enter the provider's API address, for example https://api.groq.com/openai/v1.")
         detected = KeyKind.ADMIN if self.api_key.startswith("sk-admin-") else KeyKind.API
         if self.kind is None:
             self.kind = detected
@@ -59,6 +89,13 @@ class APIKeyRotate(BaseModel):
 
 class APIKeyUpdate(BaseModel):
     label: str | None = Field(None, max_length=100)
+    # A new API address for the key (checked again); omitted: unchanged.
+    base_url: str | None = Field(None, max_length=300)
+
+    @field_validator("base_url")
+    @classmethod
+    def _url(cls, value: str | None) -> str | None:
+        return _clean_url(value)
 
 
 class APIKeyRead(BaseModel):
@@ -77,6 +114,8 @@ class APIKeyRead(BaseModel):
     available_models: list[str] = []
     # Admin key: the OpenAI project it counts, or None for the whole OpenAI organization.
     openai_project_id: str | None = None
+    # The API address calls go to (None: the provider's usual one).
+    base_url: str | None = None
 
 
 # 2. Models --------------------------------------------------------------------------------------------------------
@@ -268,9 +307,20 @@ class CatalogModel(BaseModel):
     price: tuple[float, float] | None
 
 
+class CatalogProvider(BaseModel):
+    id: str
+    label: str
+    needs_key: bool
+    needs_base_url: bool  # the address must be given (no usual one)
+    base_url_hint: str  # an example address
+    help: str
+
+
 class Catalog(BaseModel):
     providers: list[str]
     models: list[CatalogModel]
+    # Every provider that can be connected, with what its form needs.
+    provider_options: list[CatalogProvider] = []
 
 
 class AIOverview(BaseModel):

@@ -63,7 +63,7 @@ USER_MESSAGE = "AI services are currently unavailable for your organization. Ple
 KEYLESS = frozenset({AIProvider.LOCAL, AIProvider.OLLAMA})
 
 PROVIDER_NAMES = {
-    AIProvider.OPENAI: "OpenAI", AIProvider.OPENAI_COMPATIBLE: "OpenAI-compatible", AIProvider.OPENCODE: "OpenCode",
+    AIProvider.OPENAI: "OpenAI", AIProvider.OPENAI_COMPATIBLE: "the custom API", AIProvider.OPENCODE: "OpenCode",
     AIProvider.OLLAMA: "Ollama", AIProvider.LOCAL: "Local",
 }
 
@@ -169,15 +169,18 @@ def _check_model(service, organization_id: uuid.UUID, kind: str, models: list[Or
         result.missing.append("an answering model")
         return
     else:
-        # No embedding model assigned: the platform's, called with the organization's own key.
+        # No embedding model assigned: the platform's default one, if the organization has a key for its provider
+        # (the vectors then match the search index); otherwise one must be assigned.
         provider, model = service.settings.EMBEDDING_PROVIDER.lower(), service.settings.EMBEDDING_MODEL
+        if provider not in KEYLESS and provider not in keys:
+            result.missing.append("an embedding model (assign one in Models)")
+            return
     if provider in KEYLESS:
         return
     name = PROVIDER_NAMES.get(provider, provider)
     key = keys.get(provider)
     if key is None:
-        result.missing.append(f"an API key for {name}" + (
-            f" (the {label} model {model} uses it)" if kind == ModelService.EMBEDDINGS else ""))
+        result.missing.append(f"an API key for {name} (the {label} model {model} uses it)")
         return
     if mfa.decrypt(service.settings, key.key_encrypted) is None:
         problem = ("AI_CONFIGURATION_INVALID",
@@ -227,6 +230,13 @@ def readiness(service, organization_id: uuid.UUID, *, limits: bool = True) -> Re
                                    "until it resets or is raised.")
         if quota.questions.limit is None and tokens.total.limit is None and credits.credits.limit is None:
             result.warnings.append("No question, token or budget limit is set, so AI usage is unlimited.")
+        embedding = next((m for m in models if m.service == ModelService.EMBEDDINGS and m.is_enabled and m.is_default),
+                         None)
+        if embedding is not None and embedding.provider in (AIProvider.OPENAI_COMPATIBLE, AIProvider.OPENCODE):
+            result.warnings.append(
+                f"The embedding model {embedding.model_id} must return vectors of "
+                f"{service.settings.EMBEDDING_DIMENSIONS} dimensions (the size of the search index); check that it "
+                "supports it, or indexing will fail.")
         if credits.unpriced_models:
             result.warnings.append("No price is known for " + ", ".join(credits.unpriced_models)
                                    + ": the budget can't be applied to it.")

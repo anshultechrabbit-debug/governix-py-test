@@ -236,8 +236,13 @@ API key vault, models, question limit, token limits, credit budget, alerts. Tabl
   enforced, an unpriced paid model is refused (`AI_PRICE_UNAVAILABLE`). The provider's own balance is shown only for an
   OpenAI admin key (Costs API) and never changes the internal budget.
 - Keys: Fernet via `auth.mfa.encrypt` (same `MFA_ENCRYPTION_KEY`), shown as `key_hint` only; add/rotate/enable/disable
-  need step-up. One active key per provider **and kind** (partial unique index). The panel offers OpenAI only for now
-  (`service.ENABLED_PROVIDERS`; the API still accepts every integrated provider).
+  need step-up. One active key per provider **and kind** (partial unique index). **Any LLM** (2026-11-21): the panel
+  offers every integrated provider (`service.ENABLED_PROVIDERS` / `PROVIDER_FORMS`): `openai_compatible` ("Custom API":
+  Gemini, Groq, Mistral, DeepSeek, Together, OpenRouter, Azure, vLLM ...; needs `base_url`), `openai`, `opencode`,
+  `ollama` (no key, address only). Each key carries its own API address in `details.base_url`
+  (`service.connection`), used by the runtime and the key check. Suggestions in Models come from each key's own model
+  list (`catalog`); OpenAI's price list only for an OpenAI connection. Non-OpenAI models need a price on the
+  assignment for a budget to apply. The OpenAI Admin key ("usage reader") shows only with an OpenAI connection.
   - `kind="api"` makes the calls; checking it stores the chat/embedding models it may use (`details.models`), which
     the assign-model form offers.
   - `kind="admin"` (an OpenAI `sk-admin-` key, detected by prefix) never makes calls: it reads OpenAI's Costs and

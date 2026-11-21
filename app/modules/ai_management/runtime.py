@@ -52,19 +52,30 @@ def organization_llm(db: Session, session_factory: sessionmaker, settings: Setti
     service = AIManagementService(db, settings)
     ensure_ready(service, organization_id)
     provider, model_id, row = service.active_model(organization_id, ModelService.ANSWERS)
-    key = service.decrypted_key(organization_id, provider)
+    key, base_url = service.connection(organization_id, provider)
     if row is None and key is None and fallback is not None and not settings.AI_REQUIRE_ORG_CONFIG:
         return OrganizationLLM(fallback(), session_factory, settings, organization_id, provider=provider,
                                user_id=user_id, feature=feature)
     changes: dict = {"LLM_PROVIDER": provider, "LLM_MODEL": model_id}
-    if provider == AIProvider.OPENAI and key:
-        changes["OPENAI_API_KEY"] = SecretStr(key)
+    # The organization's own key, and its own API address when the key has one (any compatible provider).
+    if provider == AIProvider.OPENAI:
+        if key:
+            changes["OPENAI_API_KEY"] = SecretStr(key)
+        if base_url:
+            changes["OPENAI_BASE_URL"] = base_url
     elif provider == AIProvider.OPENCODE:
         changes["OPENCODE_MODEL"] = model_id
         if key:
             changes["OPENCODE_API_KEY"] = SecretStr(key)
-    elif provider == AIProvider.OPENAI_COMPATIBLE and key:
-        changes["LLM_API_KEY"] = SecretStr(key)
+        if base_url:
+            changes["OPENCODE_BASE_URL"] = base_url
+    elif provider == AIProvider.OPENAI_COMPATIBLE:
+        if key:
+            changes["LLM_API_KEY"] = SecretStr(key)
+        if base_url:
+            changes["LLM_BASE_URL"] = base_url
+    elif provider == AIProvider.OLLAMA and base_url:
+        changes["LLM_BASE_URL"] = f"{base_url.rstrip('/').removesuffix('/v1')}/v1"
     from app.infrastructure.ai.llm.factory import create_llm
 
     inner = create_llm(settings.model_copy(update=changes))
@@ -203,7 +214,7 @@ def organization_embedder(db: Session, session_factory: sessionmaker, settings: 
     ensure_ready(service, organization_id, embeddings=True)
     try:
         provider, model_id, row = service.active_model(organization_id, ModelService.EMBEDDINGS)
-        key = service.decrypted_key(organization_id, provider)
+        key, base_url = service.connection(organization_id, provider)
     except AIModelNotConfigured as exc:  # an embedding error, so searches fall back to keywords
         raise AIEmbeddingBlocked(exc.message, code=exc.code) from None
     if row is None and (key is None or not settings.AI_REQUIRE_ORG_CONFIG):
@@ -212,10 +223,18 @@ def organization_embedder(db: Session, session_factory: sessionmaker, settings: 
         return OrganizationEmbedding(fallback, session_factory, settings, organization_id, provider, user_id=user_id,
                                      feature=feature)
     changes: dict = {"EMBEDDING_PROVIDER": provider, "EMBEDDING_MODEL": model_id}
-    if provider == AIProvider.OPENAI and key:
-        changes["OPENAI_API_KEY"] = SecretStr(key)
-    elif provider == AIProvider.OPENAI_COMPATIBLE and key:
-        changes["EMBEDDING_API_KEY"] = SecretStr(key)
+    if provider == AIProvider.OPENAI:
+        if key:
+            changes["OPENAI_API_KEY"] = SecretStr(key)
+        if base_url:
+            changes["OPENAI_BASE_URL"] = base_url
+    elif provider == AIProvider.OPENAI_COMPATIBLE:
+        if key:
+            changes["EMBEDDING_API_KEY"] = SecretStr(key)
+        if base_url:
+            changes["EMBEDDING_BASE_URL"] = base_url
+    elif provider == AIProvider.OLLAMA and base_url:
+        changes["EMBEDDING_BASE_URL"] = base_url.rstrip("/").removesuffix("/v1")
     elif provider not in (AIProvider.OPENAI, AIProvider.OPENAI_COMPATIBLE, AIProvider.OLLAMA, AIProvider.LOCAL):
         raise AIEmbeddingBlocked(f"{provider} cannot create embeddings; assign an embedding model of another provider.")
     from app.infrastructure.ai.embeddings.factory import create_embedder

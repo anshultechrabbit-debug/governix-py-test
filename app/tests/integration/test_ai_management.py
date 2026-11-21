@@ -77,7 +77,7 @@ def test_keys_are_encrypted_masked_and_never_cross_organizations(setup, db):
     assert master.get(f"/organizations/{other.org.id}/ai").json()["data"]["keys"] == []
 
     rotated = master.post(f"/organizations/{tenant.org.id}/ai/keys/{key['id']}/rotate",
-                          json={"api_key": "local-rotated-secret-key-9876"})
+                          json={"provider": "openai", "api_key": "local-rotated-secret-key-9876"})
     assert rotated.json()["data"]["masked_key"] == "loca••••9876" and rotated.json()["data"]["rotated_at"]
 
     # A second key for the provider becomes the active one; enabling the first switches back.
@@ -129,19 +129,19 @@ def test_an_openai_key_lists_its_models_and_an_admin_key_reads_what_openai_repor
     monkeypatch.setattr("app.modules.ai_management.service._http_get", fake)
     base = f"/organizations/{tenant.org.id}/ai"
 
-    api = master.post(f"{base}/keys", json={"api_key": "sk-proj-" + "a" * 40})
+    api = master.post(f"{base}/keys", json={"provider": "openai", "api_key": "sk-proj-" + "a" * 40})
     key = api.json()["data"]
     assert key["kind"] == "api" and key["validation_status"] == "valid"
     assert key["available_models"] == ["gpt-4.1", "gpt-4o-mini", "text-embedding-3-small"]  # chat + embedding only
     overview = master.get(base).json()["data"]
-    assert overview["catalog"]["providers"] == ["openai"]
+    assert overview["catalog"]["providers"] == ["openai_compatible", "openai", "opencode", "ollama"]
     assert [m["model_id"] for m in overview["catalog"]["models"]][:3] == ["gpt-4.1", "gpt-4o-mini", "text-embedding-3-small"]
     assert overview["credits"]["provider_account"]["available"] is False
 
     # An Admin key is told apart by its prefix, never makes AI calls, and reads OpenAI's own figures.
-    wrong = master.post(f"{base}/keys", json={"kind": "api", "api_key": "sk-admin-" + "b" * 40})
+    wrong = master.post(f"{base}/keys", json={"provider": "openai", "kind": "api", "api_key": "sk-admin-" + "b" * 40})
     assert wrong.status_code == 422
-    admin = master.post(f"{base}/keys", json={"api_key": "sk-admin-" + "b" * 40, "openai_project_id": "proj_bank1"})
+    admin = master.post(f"{base}/keys", json={"provider": "openai", "api_key": "sk-admin-" + "b" * 40, "openai_project_id": "proj_bank1"})
     assert admin.json()["data"]["kind"] == "admin" and admin.json()["data"]["openai_project_id"] == "proj_bank1"
     keys = master.get(base).json()["data"]["keys"]
     assert sorted((k["kind"], k["is_active"]) for k in keys) == [("admin", True), ("api", True)]
@@ -157,7 +157,7 @@ def test_an_openai_key_lists_its_models_and_an_admin_key_reads_what_openai_repor
     assert all(c[1].startswith("sk-admin-") for c in usage_calls)  # never the API key
 
     # Rotating keeps the kind.
-    mismatch = master.post(f"{base}/keys/{key['id']}/rotate", json={"api_key": "sk-admin-" + "c" * 40})
+    mismatch = master.post(f"{base}/keys/{key['id']}/rotate", json={"provider": "openai", "api_key": "sk-admin-" + "c" * 40})
     assert mismatch.status_code == 422 and mismatch.json()["error"]["reason"] == "KEY_KIND_MISMATCH"
 
 

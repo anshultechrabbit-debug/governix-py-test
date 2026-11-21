@@ -151,8 +151,10 @@ def add_key(organization_id: uuid.UUID, body: APIKeyCreate, principal: MasterAdm
 @router.patch("/keys/{key_id}", response_model=ApiResponse[APIKeyRead])
 def relabel_key(organization_id: uuid.UUID, key_id: uuid.UUID, body: APIKeyUpdate, principal: MasterAdmin,
                 service: Service):
-    key = service.relabel_key(organization_id, key_id, body.label)
-    _audit(service, principal, organization_id, "key_relabelled", {"provider": key.provider, "key": key.key_hint})
+    set_url = "base_url" in body.model_fields_set
+    key = service.relabel_key(organization_id, key_id, body.label, body.base_url, set_base_url=set_url)
+    _audit(service, principal, organization_id, "key_updated" if set_url else "key_relabelled",
+           {"provider": key.provider, "key": key.key_hint, **({"base_url": body.base_url} if set_url else {})})
     return ok(service.key_read(key))
 
 

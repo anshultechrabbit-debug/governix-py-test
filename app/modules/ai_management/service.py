@@ -31,7 +31,7 @@ from app.modules.ai_management.model import (
 )
 from app.modules.ai_management.schema import (
     DEFAULT_THRESHOLDS, ActiveModel, AIOverview, APIKeyCreate, APIKeyRead, Catalog, CatalogModel, CreditRead,
-    CreditSet, Meter, ModelAssign, ModelRead, ModelsRead, ModelUpdate, NotifRead, NotifSet, ProviderAccount,
+    CatalogProvider, CreditSet, Meter, ModelAssign, ModelRead, ModelsRead, ModelUpdate, NotifRead, NotifSet, ProviderAccount,
     QuotaRead, QuotaSet, TokenRead, TokenSet, UsageDay,
 )
 from app.modules.ai_usage.service import PRICES, price_of
@@ -47,8 +47,18 @@ RESERVATION_TTL = timedelta(minutes=15)
 FREE_PROVIDERS = frozenset({AIProvider.LOCAL, AIProvider.OLLAMA})
 PROVIDER_ACCOUNT_CACHE_SECONDS = 600
 _account_cache: dict[str, tuple[float, ProviderAccount]] = {}
-# The providers the admin panel offers for now (the API still accepts every integrated provider).
-ENABLED_PROVIDERS = (AIProvider.OPENAI,)
+# The providers the admin panel offers: every provider Governix can call (the local stand-in is for tests).
+ENABLED_PROVIDERS = (AIProvider.OPENAI, AIProvider.OPENAI_COMPATIBLE, AIProvider.OPENCODE, AIProvider.OLLAMA)
+PROVIDER_FORMS = {
+    AIProvider.OPENAI_COMPATIBLE: ("Custom API (any compatible LLM)", True, True, "https://api.groq.com/openai/v1",
+                                   "Any provider with an OpenAI-compatible API: Google Gemini, Groq, Mistral, DeepSeek, "
+                                   "Together, Fireworks, OpenRouter, Azure OpenAI, or your own vLLM / LM Studio server."),
+    AIProvider.OPENAI: ("OpenAI", True, False, "https://api.openai.com/v1", "OpenAI's own API."),
+    AIProvider.OPENCODE: ("OpenCode Zen", True, False, "https://opencode.ai/zen/v1",
+                          "OpenCode's gateway to many models with one key."),
+    AIProvider.OLLAMA: ("Ollama (self-hosted)", False, False, "http://localhost:11434",
+                        "Models running on your own Ollama server. No key, no per-token cost."),
+}
 OPENAI_ADMIN_API = "https://api.openai.com/v1/organization"
 # Model families worth offering from an OpenAI key's model list (not audio, image, moderation or legacy models).
 _OPENAI_ANSWER_FAMILIES = ("gpt-4", "gpt-5", "o1", "o3", "o4", "chatgpt-")
@@ -150,11 +160,13 @@ def key_hint(raw: str) -> str:
 
 
 def _usable_models(provider: str, body: Any) -> list[str]:
-    """The chat and embedding models in a provider's /models answer, newest names first."""
+    """The chat and embedding models in a provider's /models answer (Ollama: /api/tags), newest names first."""
     ids = [str(m.get("id")) for m in (body or {}).get("data", []) if isinstance(m, dict) and m.get("id")] \
         if isinstance(body, dict) else []
+    if provider == AIProvider.OLLAMA and isinstance(body, dict):
+        ids = [str(m.get("name") or m.get("model")) for m in body.get("models", []) if isinstance(m, dict)]
     if provider != AIProvider.OPENAI:
-        return sorted(ids)[:200]
+        return sorted({i.removeprefix("models/") for i in ids if i})[:200]
     keep = [i for i in ids if (i.startswith(_OPENAI_ANSWER_FAMILIES) or i.startswith("text-embedding-3"))
             and not any(word in i for word in _OPENAI_SKIP)]
     return sorted(keep, key=lambda i: (i.startswith("text-embedding"), i))[:200]
@@ -258,7 +270,7 @@ class AIManagementService:
         ))
 
     def decrypted_key(self, organization_id: uuid.UUID, provider: str) -> str | None:
-        """The organization's own key for the provider, or None (the platform's key is used)."""
+        """The organization's own key for the provider, or None."""
         row = self.active_key(organization_id, provider)
         if row is None:
             return None
@@ -278,6 +290,7 @@ class AIManagementService:
             validated_at=key.validated_at, rotated_at=key.rotated_at, created_at=key.created_at, kind=key.kind,
             available_models=list((key.details or {}).get("models") or []),
             openai_project_id=(key.details or {}).get("project_id"),
+            base_url=(key.details or {}).get("base_url"),
         )
 
     def _key(self, organization_id: uuid.UUID, key_id: uuid.UUID) -> OrgAPIKey:
@@ -296,6 +309,8 @@ class AIManagementService:
         """A new active key of its kind for the provider; the previous active one (if any) is disabled and kept."""
         self.organization(organization_id)
         details = {"project_id": body.openai_project_id} if body.openai_project_id else {}
+        if body.base_url:
+            details["base_url"] = body.base_url
         key = OrgAPIKey(organization_id=organization_id, provider=body.provider, kind=body.kind, label=body.label,
                         key_encrypted=mfa.encrypt(self.settings, body.api_key), key_hint=key_hint(body.api_key),
                         is_active=True, created_by_id=actor_id, details=details)
@@ -328,10 +343,28 @@ class AIManagementService:
         key.is_active = active
         return key
 
-    def relabel_key(self, organization_id: uuid.UUID, key_id: uuid.UUID, label: str | None) -> OrgAPIKey:
+    def relabel_key(self, organization_id: uuid.UUID, key_id: uuid.UUID, label: str | None,
+                    base_url: str | None = None, *, set_base_url: bool = False) -> OrgAPIKey:
+        """A new label, and with `set_base_url` a new API address (the key is checked again against it)."""
         key = self._key(organization_id, key_id)
         key.label = (label or "").strip() or None
+        if set_base_url and base_url != (key.details or {}).get("base_url"):
+            details = {k: v for k, v in (key.details or {}).items() if k not in ("base_url", "models")}
+            if base_url:
+                details["base_url"] = base_url
+            key.details = details
+            raw = mfa.decrypt(self.settings, key.key_encrypted)
+            if raw is not None:
+                self._validate(key, raw)
         return key
+
+    def connection(self, organization_id: uuid.UUID, provider: str) -> tuple[str | None, str | None]:
+        """(key, API address) of the organization's active connection to the provider; (None, None) without one.
+        The address is None when the provider's usual one applies."""
+        row = self.active_key(organization_id, provider)
+        if row is None:
+            return None, None
+        return self.decrypted_key(organization_id, provider), (row.details or {}).get("base_url")
 
     def validate_key(self, organization_id: uuid.UUID, key_id: uuid.UUID) -> OrgAPIKey:
         key = self._key(organization_id, key_id)
@@ -344,7 +377,11 @@ class AIManagementService:
         _account_cache.clear()  # the provider's figures are read again with the checked key
         return key
 
-    def _base_url(self, provider: str) -> str | None:
+    def _base_url(self, provider: str, key: OrgAPIKey | None = None) -> str | None:
+        """Where the provider's API is: the key's own address, else the platform's setting, else the usual one."""
+        own = (key.details or {}).get("base_url") if key is not None else None
+        if own:
+            return own
         s = self.settings
         return {
             AIProvider.OPENAI: s.OPENAI_BASE_URL or "https://api.openai.com/v1",
@@ -359,16 +396,17 @@ class AIManagementService:
         if key.provider == AIProvider.LOCAL:
             key.validation_status, key.validation_message = "valid", "The local model needs no key."
             return
-        base = self._base_url(key.provider)
+        base = self._base_url(key.provider, key)
         if not base:
             key.validation_status = "unreachable"
-            key.validation_message = "No server address is configured for this provider on the platform."
+            key.validation_message = "No API address is set for this provider: add it to the key."
             return
         if key.kind == KeyKind.ADMIN:
             # An Admin key reads the organization's costs; it cannot list models or make calls.
             url, params = f"{OPENAI_ADMIN_API}/costs", {"start_time": int(time.time()) - 86_400, "limit": 1}
         elif key.provider == AIProvider.OLLAMA:
-            url, params = f"{base.rstrip('/')}/api/tags", None
+            root = base.rstrip("/").removesuffix("/v1")
+            url, params = f"{root}/api/tags", None
         else:
             url, params = f"{base.rstrip('/')}/models", None
         try:
@@ -390,6 +428,9 @@ class AIManagementService:
                                           if models else "The provider accepted the key.")
         elif status in (401, 403):
             key.validation_status, key.validation_message = "invalid", "The provider rejected the key."
+        elif status == 404:
+            key.validation_status = "unreachable"
+            key.validation_message = "Nothing answered at this API address (HTTP 404): check the address."
         else:
             key.validation_status = "unreachable"
             key.validation_message = f"The provider answered HTTP {status}."
@@ -662,10 +703,14 @@ class AIManagementService:
         row = self.active_key(organization_id, AIProvider.OPENAI, KeyKind.ADMIN)
         raw = mfa.decrypt(self.settings, row.key_encrypted) if row else None
         if not raw:
+            if self.active_key(organization_id, AIProvider.OPENAI) is None:
+                return ProviderAccount(available=False, message=(
+                    "AI providers don't report the remaining credit of an account, so the budget enforced here is "
+                    "the one you set. Spend is computed from the tokens each call used and the model's price."))
             return ProviderAccount(available=False, message=(
-                "OpenAI doesn't show the account balance or spend to ordinary API keys. Add an OpenAI Admin key "
-                "(sk-admin-...) to see what OpenAI reports as spent and used, here and on the Credits tab. OpenAI "
-                "has no API for the remaining credit at all, so the budget is set by you."))
+                "The provider doesn't show spend to ordinary API keys. Add a usage reader key (an OpenAI Admin key, "
+                "sk-admin-...) to see what it reports as spent and used. No provider reports the remaining credit, "
+                "so the budget is set by you."))
         project = (row.details or {}).get("project_id")
         cache_key = hashlib.sha256(f"{raw}:{project}:{since.isoformat()}".encode()).hexdigest()
         if not refresh and (cached := _account_cache.get(cache_key)) and cached[0] > time.monotonic():
@@ -1023,15 +1068,28 @@ class AIManagementService:
         return result
 
     def catalog(self, organization_id: uuid.UUID) -> Catalog:
-        """What the assign-model form offers: the models the organization's own key can use (from its last check),
-        else the platform's price list; only the providers enabled for now."""
-        own = self.active_key(organization_id, AIProvider.OPENAI)
-        names = list((own.details or {}).get("models") or []) if own else []
-        names += [n for n in PRICES if n not in names and n != "text-embedding-ada-002"]  # ada-002: fixed size
-        models = [CatalogModel(provider="openai", model_id=name,
-                               service="embeddings" if name.startswith("text-embedding") else "answers",
-                               price=self.price(name, "openai")) for name in names]
-        return Catalog(providers=[p.value for p in ENABLED_PROVIDERS], models=models)
+        """What the assign-model form offers: for every provider the organization has connected, the models its
+        key can use (from its last check); OpenAI's price list is added only for an OpenAI connection."""
+        models: list[CatalogModel] = []
+        seen: set[tuple[str, str]] = set()
+        for key in self._keys(organization_id):
+            if not key.is_active or key.kind != KeyKind.API:
+                continue
+            names = list((key.details or {}).get("models") or [])
+            if key.provider == AIProvider.OPENAI:
+                names += [n for n in PRICES if n not in names and n != "text-embedding-ada-002"]  # ada-002: fixed size
+            for name in names:
+                if (key.provider, name) in seen:
+                    continue
+                seen.add((key.provider, name))
+                models.append(CatalogModel(provider=key.provider, model_id=name,
+                                           service="embeddings" if "embed" in name.lower() else "answers",
+                                           price=self.price(name, key.provider)))
+        options = [CatalogProvider(id=p.value, label=label, needs_key=needs_key, needs_base_url=needs_url,
+                                   base_url_hint=hint, help=help_text)
+                   for p, (label, needs_key, needs_url, hint, help_text) in PROVIDER_FORMS.items()
+                   if p in ENABLED_PROVIDERS]
+        return Catalog(providers=[o.id for o in options], models=models, provider_options=options)
 
     def overview(self, organization_id: uuid.UUID, *, manage: bool) -> AIOverview:
         org = self.organization(organization_id)
