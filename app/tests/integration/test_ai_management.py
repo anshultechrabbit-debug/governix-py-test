@@ -134,7 +134,7 @@ def test_an_openai_key_lists_its_models_and_an_admin_key_reads_what_openai_repor
     assert key["kind"] == "api" and key["validation_status"] == "valid"
     assert key["available_models"] == ["gpt-4.1", "gpt-4o-mini", "text-embedding-3-small"]  # chat + embedding only
     overview = master.get(base).json()["data"]
-    assert overview["catalog"]["providers"] == ["openai_compatible", "openai", "opencode", "ollama"]
+    assert overview["catalog"]["providers"] == ["openai"]  # AI_PANEL_PROVIDERS
     assert [m["model_id"] for m in overview["catalog"]["models"]][:3] == ["gpt-4.1", "gpt-4o-mini", "text-embedding-3-small"]
     assert overview["credits"]["provider_account"]["available"] is False
 

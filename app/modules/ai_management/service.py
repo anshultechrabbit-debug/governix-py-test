@@ -47,7 +47,7 @@ RESERVATION_TTL = timedelta(minutes=15)
 FREE_PROVIDERS = frozenset({AIProvider.LOCAL, AIProvider.OLLAMA})
 PROVIDER_ACCOUNT_CACHE_SECONDS = 600
 _account_cache: dict[str, tuple[float, ProviderAccount]] = {}
-# The providers the admin panel offers: every provider Governix can call (the local stand-in is for tests).
+# Every provider the admin panel can offer (the local stand-in is for tests); AI_PANEL_PROVIDERS picks which it does.
 ENABLED_PROVIDERS = (AIProvider.OPENAI, AIProvider.OPENAI_COMPATIBLE, AIProvider.OPENCODE, AIProvider.OLLAMA)
 PROVIDER_FORMS = {
     AIProvider.OPENAI_COMPATIBLE: ("Custom API (any compatible LLM)", True, True, "https://api.groq.com/openai/v1",
@@ -1085,10 +1085,12 @@ class AIManagementService:
                 models.append(CatalogModel(provider=key.provider, model_id=name,
                                            service="embeddings" if "embed" in name.lower() else "answers",
                                            price=self.price(name, key.provider)))
+        offered = [p.strip().lower() for p in self.settings.AI_PANEL_PROVIDERS]
         options = [CatalogProvider(id=p.value, label=label, needs_key=needs_key, needs_base_url=needs_url,
                                    base_url_hint=hint, help=help_text)
                    for p, (label, needs_key, needs_url, hint, help_text) in PROVIDER_FORMS.items()
-                   if p in ENABLED_PROVIDERS]
+                   if p in ENABLED_PROVIDERS and p.value in offered]
+        options.sort(key=lambda o: offered.index(o.id))
         return Catalog(providers=[o.id for o in options], models=models, provider_options=options)
 
     def overview(self, organization_id: uuid.UUID, *, manage: bool) -> AIOverview:

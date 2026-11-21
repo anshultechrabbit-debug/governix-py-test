@@ -304,6 +304,10 @@ class Settings(BaseSettings):
     # activated it (app/modules/ai_management/status.py). False: the earlier behaviour, where an organization
     # with nothing configured uses the platform's key and model.
     AI_REQUIRE_ORG_CONFIG: bool = True
+    # The AI providers the admin panel offers when connecting an organization (provider ids of
+    # ai_management.model.AIProvider: openai, openai_compatible, opencode, ollama). The API accepts every integrated
+    # provider; this only decides what the dropdown shows.
+    AI_PANEL_PROVIDERS: list[str] = ["openai"]
     # Support Center. The AI recommends a ticket's team, priority and skills; below this confidence the
     # creator must choose the destination. False: categories alone recommend (no model call).
     SUPPORT_TRIAGE_AI: bool = True
