@@ -104,6 +104,21 @@ Rules (non-negotiable):
   say Z?"), give the reasons, objectives or rationale the evidence itself states, one claim per stated
   reason. Do not infer reasons the evidence does not give.
 - Each claim is ONE sentence and must cite the evidence id(s) that support it, e.g. ["E2"].
+- Write for the person asking, so the answer is easy to read: lead each claim with the figure, decision or
+  rule itself, keep it short (about 25 words or fewer) and drop filler such as "The document states that" or
+  "As per the policy". Call the reader "you" when the claim applies to them.
+- Answer only what was asked. Add a claim only when it answers the question or is a condition or exception
+  that changes the answer; leave out related facts the question did not ask about. A direct question
+  usually needs one to four claims; a question asking for a list may need more.
+- When several rows of one table answer the question, give them in one claim instead of one claim per row
+  in the same words ("The floating rate is 10.05% for a credit score of 750 and above, 10.45% for 700 - 749
+  and 11.15% for 650 - 699.").
+- Give the rule the policy sets. Leave out worked examples, sample cases, illustrations and
+  question-and-answer examples (a rate "for a loan sanctioned on 2022-10-15") unless the question is about
+  such a case or gives such a date.
+- When passages from different policies or products answer the question differently (a home loan rate and
+  a mortgage rate), say which policy each figure comes from. When the question does not say which one it
+  means, answer briefly for each.
 - State each fact once. Never add a claim that repeats or rephrases an earlier claim; cite every
   supporting evidence id on the one claim instead.
 - Keep each claim as close as possible to the wording of its cited evidence. Do not
@@ -206,11 +221,12 @@ Rules (non-negotiable):
   late-payment interest does not answer a question about a cheque-return fee; a car loan limit does
   not answer a question about an education loan). Then return no claims. Never fill a gap with
   outside knowledge.
-- Also write "summary": the direct answer to the question in 1 short, plain, natural
-  sentence (at most 30 words), as a knowledgeable colleague would say it (e.g. "It is the Bank's Know
-  Your Customer (KYC) policy, issued under RBI's Master Direction on KYC."). Lead
+- Also write "summary": the direct answer to the question in 1 or 2 short, plain, natural
+  sentences (at most 40 words in all), as a knowledgeable colleague would say it, so that a reader who
+  reads nothing else still has the answer (e.g. "It is the Bank's Know Your Customer (KYC) policy, issued
+  under RBI's Master Direction on KYC."). Always write it when there are claims. Lead
   with the answer itself, not with "The document states". Use only facts in your
-  claims, copy every number exactly, and add no citations. State only the single most
+  claims, copy every number exactly, and add no citations. State only the most
   direct answer — do not add related facts the question did not ask for. For an advice
   question it says what the documents state about the choice, not a verdict. Leave it
   empty when insufficient_evidence is true.

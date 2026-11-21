@@ -260,6 +260,9 @@ HISTORY_KEY_CHARS = 300
 #          model read the question (patterns only without one); small talk in any words is kind "chat"
 #   v77    policy hierarchy: a main policy chosen in the UI covers its sub-policies (categories.tree), and the
 #          evidence and citations name the folder path ("Loan Policy › Gold Loan")
+#   v81    answers written to be read: short claims that lead with the figure or decision, only what was asked, one
+#          claim for the rows of one table, the policy's rule rather than worked examples or Q&A cases, the policy named
+#          when several answer differently, and a summary of up to two sentences that answers on its own
 #   v80    a yes/no question is recognised only by the model's reading (rewrite.yes_no), and the answer's verdict is
 #          a field of its JSON (verdict), never matched words; without a verdict or summary, _direct_answer writes it
 #   v79    yes/no questions in any wording ("if my salary is 40000 do i get?", the rewrite's yes_no) lead with Yes/No in
@@ -267,7 +270,7 @@ HISTORY_KEY_CHARS = 300
 #          claims (_direct_answer), checked like any summary
 #   v78    "which policies do I have?" (DOCUMENT_LIST) lists each policy in the message itself, with its folder, version
 #          in force and the first sentence of its stored summary (no model call), and returns them as no_answer.policies
-ANSWER_CACHE_VERSION = "v80"
+ANSWER_CACHE_VERSION = "v81"
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:
