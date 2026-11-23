@@ -273,7 +273,7 @@ HISTORY_KEY_CHARS = 300
 #          claims (_direct_answer), checked like any summary
 #   v78    "which policies do I have?" (DOCUMENT_LIST) lists each policy in the message itself, with its folder, version
 #          in force and the first sentence of its stored summary (no model call), and returns them as no_answer.policies
-ANSWER_CACHE_VERSION = "v82"
+ANSWER_CACHE_VERSION = "v83"  # v83: chat history limit raised (HISTORY_TURNS 4 -> 50), so follow-ups see more context
 # No supported answer in the version in force: worth looking one version back.
 # Earlier versions answer only what the version in force does not cover. An answer it gave that the
 # checks then withheld (ANSWER_FAILED_VALIDATION, ANSWER_OFF_TOPIC) means it covers the subject:

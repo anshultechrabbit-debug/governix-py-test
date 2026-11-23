@@ -59,7 +59,7 @@ export const openConversation = createAsyncThunk(
 // Earlier turns sent with a question so follow-ups ("what about that
 // scheme?") can be resolved. The server uses them only to restate the
 // question, never as evidence.
-const HISTORY_TURNS = 4;
+const HISTORY_TURNS = 50; // keep the whole conversation as context (backend cap is 100)
 // The server reads only the opening of an earlier answer; a long one is cut here.
 const HISTORY_ANSWER_CHARS = 2000;
 

@@ -25,8 +25,9 @@ class ConversationTurn(BaseModel):
 
 class AskRequest(BaseModel):
     question: Text = Field(min_length=2, max_length=2000)
-    # Earlier turns of this conversation, oldest first. Never used as evidence.
-    history: list[ConversationTurn] = Field(default_factory=list, max_length=10)
+    # Earlier turns of this conversation, oldest first. Never used as evidence. A generous cap (not 10) so the
+    # assistant keeps the whole conversation; still bounded so a request body cannot grow without limit.
+    history: list[ConversationTurn] = Field(default_factory=list, max_length=100)
     # auto: decided from the question; the others mirror the UI selector.
     mode: Literal["auto", "current", "historical", "version", "compare"] = "auto"
     as_of: date | None = None

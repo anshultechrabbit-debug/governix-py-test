@@ -63,6 +63,14 @@ OPENAI_ADMIN_API = "https://api.openai.com/v1/organization"
 # Model families worth offering from an OpenAI key's model list (not audio, image, moderation or legacy models).
 _OPENAI_ANSWER_FAMILIES = ("gpt-4", "gpt-5", "o1", "o3", "o4", "chatgpt-")
 _OPENAI_SKIP = ("audio", "realtime", "transcribe", "tts", "image", "search", "instruct", "codex", "computer-use")
+# Models OpenAI still lists in /models but has deprecated: assignable in the panel yet failing every call with
+# 404 model_not_found. Kept out of the offered list so they can't be picked. Add a model's base name here as
+# OpenAI retires it; a dated variant ("gpt-4.1-nano-2025-...") is matched too.
+_OPENAI_DEPRECATED = ("gpt-4.1-nano",)
+
+
+def _deprecated(model_id: str) -> bool:
+    return any(model_id == d or model_id.startswith(f"{d}-") for d in _OPENAI_DEPRECATED)
 
 RESOURCE_LABELS = {
     NotifResource.QUESTIONS: "question limit",
@@ -168,7 +176,7 @@ def _usable_models(provider: str, body: Any) -> list[str]:
     if provider != AIProvider.OPENAI:
         return sorted({i.removeprefix("models/") for i in ids if i})[:200]
     keep = [i for i in ids if (i.startswith(_OPENAI_ANSWER_FAMILIES) or i.startswith("text-embedding-3"))
-            and not any(word in i for word in _OPENAI_SKIP)]
+            and not any(word in i for word in _OPENAI_SKIP) and not _deprecated(i)]
     return sorted(keep, key=lambda i: (i.startswith("text-embedding"), i))[:200]
 
 

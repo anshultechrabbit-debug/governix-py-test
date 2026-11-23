@@ -19,7 +19,7 @@ from difflib import SequenceMatcher
 
 from app.infrastructure.ai.llm.base import LLMProvider, LLMUnavailableError
 
-HISTORY_TURNS = 4
+HISTORY_TURNS = 50  # how many earlier turns the assistant carries; high enough to keep the whole conversation
 HISTORY_ANSWER_CHARS = 600
 NON_LATIN_SHARE = 0.3
 
