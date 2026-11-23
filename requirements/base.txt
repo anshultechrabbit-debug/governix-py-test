@@ -3,6 +3,8 @@ uvicorn==0.54.0
 # uvicorn picks these up on its own: a faster event loop and HTTP parser for every request.
 uvloop==0.23.0; sys_platform != "win32"
 httptools==0.9.0
+# WebSocket support for uvicorn (the support-chat live feed, app/modules/tickets/realtime.py).
+websockets==14.1
 pydantic==2.13.5
 pydantic-settings==2.15.0
 SQLAlchemy==2.1.0

@@ -10,8 +10,11 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+import asyncio
+
+from fastapi import APIRouter, Depends, File, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
@@ -22,8 +25,11 @@ from app.core.exceptions import NotFoundError
 from app.core.pagination import Page, PageParams, page_params
 from app.core.responses import ApiErrorResponse, ApiResponse, ok
 from app.infrastructure.storage.base import Storage
-from app.modules.auth.dependencies import CurrentPrincipal, require
+from app.modules.auth.cookies import ACCESS_COOKIE
+from app.modules.auth.dependencies import CurrentPrincipal, principal_from_user, require
 from app.modules.auth.permissions import Permission, Principal
+from app.core.security import decode_access_token
+from app.modules.tickets.realtime import tickets_realtime
 from app.infrastructure.ai.llm.base import LLMUnavailableError
 from app.modules.ai_management.model import AIFeature
 from app.modules.ai_management.runtime import organization_llm
@@ -70,6 +76,57 @@ def get_service(db: Annotated[Session, Depends(get_db)], storage: Annotated[Stor
 
 
 Service = Annotated[TicketService, Depends(get_service)]
+
+
+@router.websocket("/ws/tickets/{ticket_id}")
+async def ticket_socket(websocket: WebSocket, ticket_id: uuid.UUID):
+    """Live updates for one ticket's conversation. The server pushes a tiny event whenever a reply or note is
+    added; the client re-fetches the ticket (with its own ACL) on it, instead of waiting for the 20s poll.
+
+    Auth: the access cookie, or a `?token=` query param for a Bearer client (a browser cannot set an
+    Authorization header on a WebSocket). Read-only, so no CSRF. It fails closed on auth and degrades to the
+    UI's polling if it cannot connect, so it never blocks support.
+    """
+    app = websocket.app
+    settings = app.state.settings
+    session_factory = app.state.session_factory
+    storage = app.state.storage
+    token = websocket.cookies.get(ACCESS_COOKIE) or websocket.query_params.get("token")
+
+    def authorized() -> bool:
+        if not token:
+            return False
+        try:
+            claims = decode_access_token(settings, token)
+            user_id = uuid.UUID(claims["sub"])
+        except Exception:
+            return False
+        with session_factory() as db:
+            user = db.get(User, user_id)
+            if user is None or not user.is_active or user.token_version != claims.get("tv"):
+                return False
+            try:
+                TicketService(db, storage, settings).get(principal_from_user(user, db), ticket_id)
+            except Exception:
+                return False  # not visible to this user
+            return True
+
+    if not await run_in_threadpool(authorized):
+        await websocket.close(code=1008)  # policy violation
+        return
+    await websocket.accept()
+    queue = tickets_realtime.subscribe(ticket_id)
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25)
+            except asyncio.TimeoutError:
+                event = {"type": "ping"}  # keep the link warm and notice a dropped client
+            await websocket.send_json(event)
+    except (WebSocketDisconnect, Exception):
+        pass
+    finally:
+        tickets_realtime.unsubscribe(ticket_id, queue)
 
 
 # --- schemas ---------------------------------------------------------------------------------------------------

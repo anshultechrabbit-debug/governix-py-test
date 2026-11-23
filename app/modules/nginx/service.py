@@ -67,6 +67,21 @@ SITE = """\
     gzip_vary on;
     gzip_types text/css application/javascript application/json image/svg+xml;
 
+    # Support-chat live feed (WebSocket): needs the upgrade headers; scoped to this path so ordinary
+    # /api/ requests keep normal keep-alive. Must come before the general /api/ location.
+    location /api/support/ws/ {{
+        proxy_pass {upstream}/support/ws/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }}
+
     # The browser calls /api/...; FastAPI serves the same paths without the prefix.
     location /api/ {{
         proxy_pass {upstream}/;

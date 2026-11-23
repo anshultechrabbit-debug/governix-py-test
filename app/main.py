@@ -109,6 +109,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        import asyncio
+
+        from app.modules.tickets.realtime import tickets_realtime
+        tickets_realtime.bind_loop(asyncio.get_running_loop())  # lets sync handlers push to support sockets
         if (
             settings.QUEUE_BACKEND is QueueBackend.LOCAL
             and settings.WORKER_MODE is WorkerMode.IN_PROCESS

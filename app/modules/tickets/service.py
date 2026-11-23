@@ -31,6 +31,7 @@ from app.modules.organizations.model import Organization
 from app.modules.policies.model import Policy
 from app.modules.policies.repository import PolicyRepository
 from app.modules.tickets import assignment, sla
+from app.modules.tickets.realtime import tickets_realtime
 from app.modules.tickets.model import (
     ACTIVE_STATUSES,
     MessageKind,
@@ -695,6 +696,10 @@ class TicketService:
                    organization_id=ticket.organization_id, link=f"/support/{ticket.id}",
                    data={"ticket_id": str(ticket.id)}, exclude=principal.user_id)
         self.session.commit()
+        # Push to anyone watching this ticket over a socket (internal notes only to the staff side is handled
+        # by the socket's own view check: a note is just a "refresh" signal, its body is re-fetched with ACL).
+        tickets_realtime.publish(ticket.id, {"type": "message", "kind": message.kind, "internal": internal,
+                                             "ticket_id": str(ticket.id), "by": str(principal.user_id)})
         return message
 
     # --- lifecycle ---------------------------------------------------------------------------------------------
