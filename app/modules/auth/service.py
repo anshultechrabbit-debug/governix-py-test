@@ -55,6 +55,27 @@ def account_suspended(user: User) -> AuthenticationError:
                                code="ACCOUNT_SUSPENDED")
 
 
+ORGANIZATION_REMOVED = ("Your organization is no longer on Governix, so this account was closed along with it. "
+                        "If you think this is a mistake, please contact Governix support.")
+BRANCH_REMOVED = ("Your branch is no longer available on Governix. Please contact your organization's administrator "
+                  "to be moved to another branch or to have your access restored.")
+
+
+def removed_account_error(session: Session, user: User) -> AuthenticationError:
+    """Why a correctly-authenticated but removed account can no longer sign in: its whole organization was
+    deleted, its branch was deleted (the organization is still there), or the account itself was deleted.
+    Each gives the person the right place to turn to, instead of a bare 'invalid email or password'."""
+    org = session.get(Organization, user.organization_id) if user.organization_id is not None else None
+    if org is not None and org.deleted_at is not None:
+        return AuthenticationError(ORGANIZATION_REMOVED, code="ORGANIZATION_REMOVED")
+    branch = session.get(Branch, user.branch_id) if user.branch_id is not None else None
+    if branch is not None and branch.deleted_at is not None:
+        return AuthenticationError(BRANCH_REMOVED, code="BRANCH_REMOVED")
+    who = _WHO_RESTORES.get(Role(user.role), "your administrator") if user.role in set(Role) else "your administrator"
+    return AuthenticationError(f"Your account has been removed from Governix. Contact {who} if you need access again.",
+                               code="ACCOUNT_REMOVED")
+
+
 def _is_active(organization: Organization | None) -> bool:
     return (
         organization is not None and organization.deleted_at is None
@@ -79,6 +100,18 @@ class AuthService:
             raise AuthenticationError(
                 "Account temporarily locked after repeated failed logins.", code="ACCOUNT_LOCKED"
             )
+
+        if user is None:
+            # No live account with this email. It may be one removed when its organization or branch was
+            # deleted: once the password checks out, say so plainly instead of "invalid email or password".
+            removed = self.session.scalar(
+                select(User).where(func.lower(User.email) == email.lower(), User.deleted_at.is_not(None))
+                .order_by(User.deleted_at.desc()).limit(1)
+            )
+            if removed is not None and verify_password(password, removed.password_hash):
+                raise removed_account_error(self.session, removed)
+            verify_password(password, None)  # uniform timing when there is nothing to verify
+            raise AuthenticationError(INVALID_CREDENTIALS, code="INVALID_CREDENTIALS")
 
         if not verify_password(password, user.password_hash if user else None):
             if user is not None:
