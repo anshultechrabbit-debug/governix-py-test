@@ -33,6 +33,17 @@ def _fernet(settings: Settings) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(key))
 
 
+def dev_bypass(settings: Settings, code: str) -> bool:
+    """Development-only skip: when AUTH_DEV_BYPASS_CODE is set, that one code stands in for any authenticator code,
+    at sign-in and at step-up. Always False when the setting is unset or blank, and the config refuses the setting
+    in production, so this can never loosen the live site."""
+    expected = settings.AUTH_DEV_BYPASS_CODE
+    if expected is None:
+        return False
+    want = expected.get_secret_value()
+    return bool(want) and hmac.compare_digest((code or "").strip(), want)
+
+
 def new_secret() -> str:
     return pyotp.random_base32(32)  # 160 bits, the size RFC 4226 recommends
 

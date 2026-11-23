@@ -135,6 +135,11 @@ class Settings(BaseSettings):
     # Important actions (users, deletions, policy withdrawals, ...: auth/step_up.py) need a fresh authenticator code.
     # Cannot be turned off in production; the test suite turns it off except where it tests it.
     STEP_UP_ENABLED: bool = True
+    # DEVELOPMENT ONLY. When set, this exact code is accepted in place of any authenticator code, for every
+    # account, at both two-step sign-in and step-up (auth/mfa.dev_bypass). It exists so local/test work is not
+    # blocked by an authenticator. It is REFUSED in production (check_backend_requirements raises), so it can
+    # never weaken the live site. Leave it unset on any real or shared deployment.
+    AUTH_DEV_BYPASS_CODE: SecretStr | None = None
     # Forgot password: the emailed link is PASSWORD_RESET_URL?token=..., valid this long and once.
     # Set the URL to the portal's reset page as users reach it (e.g. http://192.168.1.4:7001/reset-password);
     # it is never taken from the request, so a forged Host or Origin cannot redirect the token.
@@ -404,6 +409,9 @@ class Settings(BaseSettings):
         # the per-worker rate. Refuse to pretend otherwise in production.
         if self.APP_ENV is AppEnv.PRODUCTION and not self.STEP_UP_ENABLED:
             raise ValueError("STEP_UP_ENABLED=false is not allowed in production: important actions need a code.")
+        if self.APP_ENV is AppEnv.PRODUCTION and self.AUTH_DEV_BYPASS_CODE is not None:
+            raise ValueError("AUTH_DEV_BYPASS_CODE must not be set in production: it would let any account skip "
+                             "two-step sign-in and step-up with one fixed code. Use it only locally.")
         if self.APP_ENV is AppEnv.PRODUCTION and not self.RAG_RATE_LIMIT_ENABLED:
             raise ValueError(
                 "RAG_RATE_LIMIT_ENABLED=false is not allowed in production: /ai/ask spends LLM budget."

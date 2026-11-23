@@ -221,6 +221,8 @@ class AuthService:
 
     def _accept_code(self, user: User, code: str, now: datetime, *, recovery: bool = True) -> str | None:
         """"app" or "recovery" when the code is accepted (and spent), None otherwise."""
+        if mfa.dev_bypass(self.settings, code):  # development-only; never set in production (config refuses it)
+            return "app"
         secret = mfa.decrypt(self.settings, user.mfa_secret)
         if secret is not None:
             step = mfa.accepted_step(secret, code, last_step=user.mfa_last_step)

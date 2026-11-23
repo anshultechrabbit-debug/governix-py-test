@@ -35,6 +35,9 @@ def confirm_step_up(request: Request, principal: Principal, session: Session, se
     """Refuse unless the request carries a fresh code from the person's authenticator app."""
     if not settings.STEP_UP_ENABLED:
         return
+    # Development-only skip, off unless AUTH_DEV_BYPASS_CODE is set and refused in production (config guards it).
+    if mfa.dev_bypass(settings, (request.headers.get(STEP_UP_HEADER) or "")):
+        return
     user = session.get(User, principal.user_id, with_for_update=True)
     if user is None or user.mfa_enabled_at is None:
         raise PermissionDeniedError(
