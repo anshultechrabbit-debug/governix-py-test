@@ -50,9 +50,12 @@ def activate(service, organization_id: uuid.UUID, actor_id: uuid.UUID | None) ->
     if state.problems:
         raise ConflictError("AI can't be activated: " + " ".join(m for _, m in state.problems),
                             code="AI_CONFIGURATION_INVALID")
-    if state.missing:
-        raise ConflictError("AI can't be activated yet. Still required: " + "; ".join(state.missing) + ".",
-                            code="AI_CONFIGURATION_INCOMPLETE", details={"missing": state.missing})
+    # `can_activate` is decided before readiness() adds the "needs activation" pseudo-item to `missing`;
+    # gating on `missing` here would always refuse, because that item is present until we activate.
+    if not state.can_activate:
+        missing = [m for m in state.missing if m != "activation by the platform administrator"]
+        raise ConflictError("AI can't be activated yet. Still required: " + "; ".join(missing) + ".",
+                            code="AI_CONFIGURATION_INCOMPLETE", details={"missing": missing})
     row = _row(service, organization_id)
     row.is_active, row.activated_at, row.activated_by_id = True, datetime.now(UTC), actor_id
     row.suspended_at = row.suspended_by_id = row.suspended_reason = None
