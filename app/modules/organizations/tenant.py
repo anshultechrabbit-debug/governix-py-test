@@ -45,9 +45,14 @@ def _host(value: str | None) -> str:
     return (value or "").split(":")[0].strip().lower().rstrip(".")
 
 
-def find_tenant(db: Session, settings: Settings, *, host: str | None, port: int | None) -> Organization | None:
+def find_tenant(db: Session, settings: Settings, *, host: str | None, port: int | None,
+                slug: str | None = None) -> Organization | None:
     live = (Organization.deleted_at.is_(None), Organization.status == OrganizationStatus.ACTIVE)
     base = settings.NGINX_BASE_DOMAIN
+    if slug:  # path-based portal (governix-org.techrabbit.io/sbi): the slug is explicit
+        organization = db.scalar(select(Organization).where(Organization.slug == slug.strip().lower(), *live))
+        if organization is not None:
+            return organization
     host = _host(host)
     if host:
         organization = db.scalar(select(Organization).where(Organization.custom_domain == host, *live))
@@ -71,12 +76,13 @@ def portal_domain(organization: Organization, settings: Settings) -> str | None:
     return f"{organization.slug}.{base}" if base else None
 
 
-def _found(db: Session, settings: Settings, request: Request, host: str | None, port: int | None) -> Organization:
+def _found(db: Session, settings: Settings, request: Request, host: str | None, port: int | None,
+           slug: str | None = None) -> Organization:
     # nginx passes the address the browser used as Host (and the port as X-Forwarded-Port).
     host = host or request.headers.get("x-forwarded-host") or request.headers.get("host")
     if port is None and (forwarded := request.headers.get("x-forwarded-port", "")).isdigit():
         port = int(forwarded)
-    organization = find_tenant(db, settings, host=host, port=port)
+    organization = find_tenant(db, settings, host=host, port=port, slug=slug)
     if organization is None:
         raise NotFoundError("No organization is served at this address.", code="TENANT_NOT_FOUND")
     return organization
@@ -93,8 +99,9 @@ def tenant_info(
     settings: Annotated[Settings, Depends(get_app_settings)],
     port: Port = None,
     host: Host = None,
+    slug: Annotated[str | None, Query(max_length=120)] = None,
 ):
-    organization = _found(db, settings, request, host, port)
+    organization = _found(db, settings, request, host, port, slug)
     domain = portal_domain(organization, settings)
     logo = None
     if organization.logo_key is not None:
