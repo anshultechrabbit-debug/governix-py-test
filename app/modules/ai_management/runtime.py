@@ -333,5 +333,19 @@ def reserve_question(session: Session, settings: Settings, organization_id: uuid
         logger.exception("Could not check AI alerts for organization %s", organization_id)
 
 
+def release_question(session: Session, settings: Settings, organization_id: uuid.UUID,
+                     request_id: str | None) -> None:
+    """Give back a question charged by `reserve_question` when the reply turned out to be conversational (a
+    greeting or a "name a policy" prompt): it should not count against the quota. Keyed by request_id. Commits."""
+    if not request_id:
+        return
+    service = AIManagementService(session, settings)
+    service.lock(organization_id)
+    if service.release_question(organization_id, request_id):
+        session.commit()
+    else:
+        session.rollback()
+
+
 __all__ = ["AIBlocked", "AIEmbeddingBlocked", "AIModelNotConfigured", "organization_embedder", "organization_llm",
-           "reserve_question", "search_embedder"]
+           "release_question", "reserve_question", "search_embedder"]

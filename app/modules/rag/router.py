@@ -19,7 +19,8 @@ from app.modules.audit.model import AuditEvent
 from app.modules.auth.dependencies import CurrentPrincipal, require
 from app.modules.auth.permissions import Permission, Principal
 from app.modules.ai_management.model import AIFeature
-from app.modules.ai_management.runtime import organization_llm, search_embedder, reserve_question
+from app.core.request_context import get_request_id
+from app.modules.ai_management.runtime import organization_llm, release_question, search_embedder, reserve_question
 from app.modules.rag.conversations import ConversationService
 from app.modules.rag.schema import (
     AnswerResponse, AskRequest, ConversationDetail, ConversationMessageRead, ConversationRead, ConversationUpdate,
@@ -70,6 +71,8 @@ def ask(
         # One question of the organization's shared quota; refused (429) when a limit is used up.
         reserve_question(service.session, service.settings, principal.organization_id, principal.user_id)
     response = service.ask(principal, body)
+    if principal.organization_id and response.no_answer and response.no_answer.reason in NOT_A_QUESTION:
+        release_question(service.session, service.settings, principal.organization_id, get_request_id())
     _save(service.session, principal, body, response)
     return ok(response)
 
@@ -83,6 +86,11 @@ def _save(session: Session, principal: Principal, body: AskRequest, response: An
         session.rollback()
         return
     response.conversation_id = conversation.id if conversation else None
+
+
+# Replies that are not a policy question: a greeting / small talk, or no subject named ("name a policy").
+# These must not count against the shared question quota (the charge made up front is given back).
+NOT_A_QUESTION = frozenset({"GREETING", "NO_SUBJECT"})
 
 
 def _sse(event: str, data: Any) -> str:
@@ -112,6 +120,7 @@ def ask_stream(
     if principal.organization_id:
         # Before the stream opens, so a used-up limit is an ordinary 429 the page shows.
         reserve_question(db, settings, principal.organization_id, principal.user_id)
+    request_id = get_request_id()  # captured here; the stream below runs past the request's own scope
     session_factory = request.app.state.session_factory
     runtime = get_runtime()
 
@@ -132,6 +141,8 @@ def ask_stream(
             try:
                 for kind, data in service.answer_events(principal, body):
                     if kind == "done":
+                        if principal.organization_id and data.no_answer and data.no_answer.reason in NOT_A_QUESTION:
+                            release_question(session, settings, principal.organization_id, request_id)
                         _save(session, principal, body, data)
                         data = data.model_dump(mode="json")
                     yield _sse(kind, data)

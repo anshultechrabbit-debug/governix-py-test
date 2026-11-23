@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -897,6 +897,17 @@ class AIManagementService:
                                provider="governix", model="question", status=UsageStatus.SETTLED,
                                input_tokens=0, output_tokens=0, embedding_tokens=0, cost_usd=0, meta={},
                                feature="qa", estimated=False, **self._origin(user_id)))
+
+    def release_question(self, organization_id: uuid.UUID, request_id: str | None) -> int:
+        """Undo the question charged for this request. A greeting or a "name a policy" reply is not a real
+        question, so it must not count against the shared quota. Keyed by request_id, so only this turn's
+        charge is removed; returns how many rows were released."""
+        if not request_id:
+            return 0
+        result = self.db.execute(delete(OrgAIUsage).where(
+            OrgAIUsage.organization_id == organization_id, OrgAIUsage.service == "question",
+            OrgAIUsage.request_id == request_id))
+        return result.rowcount or 0
 
     # --- 6. Notifications ---------------------------------------------------------------------------------------
 
